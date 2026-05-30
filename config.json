@@ -1,0 +1,50 @@
+{
+  "volumes": [
+    {
+      "name": "风之卷",
+      "moods": [
+        {"name": "季风", "tag": "VIGOROUS", "playlist": "季风"},
+        {"name": "飓风", "tag": "TENSE", "playlist": "飓风"},
+        {"name": "秋风", "tag": "MELANCHOLY", "playlist": "秋风"},
+        {"name": "轻风", "tag": "CALM", "playlist": "轻风"}
+      ]
+    },
+    {
+      "name": "花之卷",
+      "moods": [
+        {"name": "春化", "tag": "VIGOROUS", "playlist": "春化"},
+        {"name": "绽放", "tag": "TENSE", "playlist": "绽放"},
+        {"name": "凋零", "tag": "MELANCHOLY", "playlist": "凋零"},
+        {"name": "发芽", "tag": "CALM", "playlist": "发芽"}
+      ]
+    },
+    {
+      "name": "海之卷",
+      "moods": [
+        {"name": "碧海", "tag": "VIGOROUS", "playlist": "碧海"},
+        {"name": "怒海", "tag": "TENSE", "playlist": "怒海"},
+        {"name": "深海", "tag": "MELANCHOLY", "playlist": "深海"},
+        {"name": "静海", "tag": "CALM", "playlist": "静海"}
+      ]
+    },
+    {
+      "name": "月之卷",
+      "moods": [
+        {"name": "满月", "tag": "VIGOROUS", "playlist": "满月"},
+        {"name": "弦月", "tag": "TENSE", "playlist": "弦月"},
+        {"name": "残月", "tag": "MELANCHOLY", "playlist": "残月"},
+        {"name": "新月", "tag": "CALM", "playlist": "新月"}
+      ]
+    }
+  ],
+  "action_delays": {
+    "after_click_ms": 700,
+    "before_screenshot_ms": 300,
+    "menu_appear_ms": 500
+  },
+  "apple_music_window_title": "Apple Music",
+  "template_matching": {
+    "threshold": 0.8,
+    "templates_dir": "templates"
+  }
+}
