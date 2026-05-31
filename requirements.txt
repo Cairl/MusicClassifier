@@ -5,3 +5,5 @@ pyautogui>=0.9.54
 pygetwindow>=0.0.9
 opencv-python>=4.8
 Pillow>=10.0
+process-audio-capture>=1.0.0
+librosa>=0.10
