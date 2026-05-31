@@ -18,6 +18,10 @@ from core.action_executor import ActionExecutor
 from core.playlist_config import PlaylistConfig
 from core.template_library import TemplateLibrary
 from gui.capture_wizard import CaptureWizard
+from core.audio_capture import AudioCaptureManager
+from core.audio_analyzer import AudioAnalyzer
+from gui.quadrant_chart import QuadrantChart
+from process_audio_capture import ProcessAudioCapture
 
 
 def _draw_svg_icon(size: int, color: str, paths: list[str], fill: bool = False) -> QIcon:
@@ -76,12 +80,23 @@ _SETTINGS_ICON_PATHS = [
     "M 5 13 L 15 13"
 ]
 
+_RECORD_ICON_PATHS = [
+    "M 5 10 Q 5 4 10 4 Q 15 4 15 10 L 15 12 L 5 12 Z",
+    "M 3 12 L 3 14 Q 3 17 6 17 L 8 17 L 8 14",
+    "M 17 12 L 17 14 Q 17 17 14 17 L 12 17 L 12 14",
+    "M 8 17 L 8 19 L 12 19 L 12 17",
+]
+
 
 def _make_circle_icon(icon_type: str, color: str, parent=None) -> QPushButton:
     btn = QPushButton(parent)
     btn.setFixedSize(32, 32)
-    fill = icon_type == "play"
-    icon = _draw_svg_icon(20, color, _PLAY_ICON_PATHS if icon_type == "play" else _SETTINGS_ICON_PATHS, fill=fill)
+    if icon_type == "play":
+        icon = _draw_svg_icon(20, color, _PLAY_ICON_PATHS, fill=True)
+    elif icon_type == "record":
+        icon = _draw_svg_icon(20, color, _RECORD_ICON_PATHS, fill=False)
+    else:
+        icon = _draw_svg_icon(20, color, _SETTINGS_ICON_PATHS, fill=False)
     btn.setIcon(icon)
     btn.setIconSize(QSize(20, 20))
     btn.setStyleSheet("""
@@ -191,6 +206,9 @@ class MainWindow(QMainWindow):
         )
         self._current_track: TrackInfo | None = None
         self._running = False
+        self._audio_capture = AudioCaptureManager()
+        self._audio_analyzer = AudioAnalyzer(self._audio_capture)
+        self._recording = False
         self._playlist_buttons: list[QPushButton] = []
         self._init_ui()
         self._connect_signals()
@@ -226,6 +244,10 @@ class MainWindow(QMainWindow):
         self._start_btn = _make_circle_icon("play", "#5f6368", self)
         self._start_btn.clicked.connect(self._on_start_toggle)
         sidebar_layout.addWidget(self._start_btn, 0, Qt.AlignHCenter)
+
+        self._record_btn = _make_circle_icon("record", "#5f6368", self)
+        self._record_btn.clicked.connect(self._on_record_toggle)
+        sidebar_layout.addWidget(self._record_btn, 0, Qt.AlignHCenter)
 
         sidebar_layout.addStretch()
 
@@ -264,6 +286,10 @@ class MainWindow(QMainWindow):
         track_card_layout.addWidget(self._album_label)
 
         main_layout.addWidget(track_card)
+
+        self._quadrant_chart = QuadrantChart()
+        self._quadrant_chart.setVisible(False)
+        main_layout.addWidget(self._quadrant_chart)
 
         grid_widget = QWidget()
         grid = QGridLayout(grid_widget)
@@ -319,6 +345,8 @@ class MainWindow(QMainWindow):
         self._signals.classification_done.connect(self._handle_classification_done)
         self._signals.error_occurred.connect(self._handle_error)
         self._signals.window_activated.connect(self._on_window_activated)
+        self._audio_analyzer.signals.mood_analyzed.connect(self._handle_mood_analyzed)
+        self._audio_analyzer.signals.analysis_error.connect(self._handle_analysis_error)
 
     def _on_start_toggle(self):
         if self._running:
@@ -501,3 +529,120 @@ class MainWindow(QMainWindow):
             }
 """)
         self._set_playlist_buttons_active(False)
+
+    def _on_record_toggle(self):
+        if self._recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        if not ProcessAudioCapture.is_supported():
+            QMessageBox.warning(self, "不支持",
+                "当前 Windows 版本不支持进程音频捕获，需要 Windows 10 2004+ 或 Windows 11。")
+            return
+
+        self._record_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e8eaed;
+                border: none;
+                border-radius: 16px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #dadce0;
+            }
+            QPushButton:pressed {
+                background-color: #c4c7c9;
+            }
+        """)
+
+        def worker():
+            success = self._audio_capture.start()
+            if success:
+                self._audio_analyzer.start()
+            else:
+                self._signals.error_occurred.emit("未找到正在播放音频的 Apple Music 进程")
+
+        self._recording = True
+        self._quadrant_chart.setVisible(True)
+        self._quadrant_chart.reset()
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _stop_recording(self):
+        self._recording = False
+        self._audio_analyzer.stop()
+        self._audio_capture.stop()
+        self._quadrant_chart.setVisible(False)
+        self._clear_quadrant_highlight()
+        self._record_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 16px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #e8eaed;
+            }
+            QPushButton:pressed {
+                background-color: #dadce0;
+            }
+        """)
+
+    def _handle_mood_analyzed(self, arousal, valence, quadrant, confidence):
+        self._quadrant_chart.update_mood(arousal, valence, quadrant, confidence)
+        if confidence >= 0.6:
+            self._highlight_recommended_quadrant(quadrant)
+        else:
+            self._clear_quadrant_highlight()
+
+    def _handle_analysis_error(self, msg):
+        print(f"[ANALYSIS ERROR] {msg}", file=sys.stderr, flush=True)
+
+    def _highlight_recommended_quadrant(self, quadrant: str):
+        tag_col = {"VIGOROUS": 1, "TENSE": 2, "MELANCHOLY": 3, "CALM": 4}
+        col = tag_col.get(quadrant)
+        if col is None:
+            return
+
+        moods = self._config.get_all_moods_flat()
+        volumes_seen: list[str] = []
+        for mood in moods:
+            vol = mood["volume"]
+            if vol not in volumes_seen:
+                volumes_seen.append(vol)
+
+        btn_idx = 0
+        for volume_name in volumes_seen:
+            vol_moods = {m["tag"]: m for m in moods if m["volume"] == volume_name}
+            for tag in TAG_ORDER:
+                if tag in vol_moods:
+                    if btn_idx < len(self._playlist_buttons):
+                        btn = self._playlist_buttons[btn_idx]
+                        if tag == quadrant:
+                            btn.setStyleSheet("""
+                                QPushButton {
+                                    background-color: #e8f0fe;
+                                    color: #1a73e8;
+                                    border: 2px solid #1a73e8;
+                                    border-radius: 8px;
+                                    padding: 6px 4px;
+                                    font-size: 11px;
+                                    min-height: 28px;
+                                    font-weight: 600;
+                                }
+                                QPushButton:hover {
+                                    background-color: #d2e3fc;
+                                }
+                                QPushButton:pressed {
+                                    background-color: #aecbfa;
+                                }
+                            """)
+                        else:
+                            btn.setStyleSheet("")
+                    btn_idx += 1
+
+    def _clear_quadrant_highlight(self):
+        for btn in self._playlist_buttons:
+            btn.setStyleSheet("")
