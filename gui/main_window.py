@@ -56,6 +56,10 @@ def _draw_svg_icon(size: int, color: str, paths: list[str], fill: bool = False) 
                              float(parts[i+3]), float(parts[i+4]),
                              float(parts[i+5]), float(parts[i+6]))
                 i += 7
+            elif cmd == 'Q':
+                path.quadTo(float(parts[i+1]), float(parts[i+2]),
+                            float(parts[i+3]), float(parts[i+4]))
+                i += 5
             elif cmd == 'A':
                 cx, cy, rx, ry, start, sweep = float(parts[i+1]), float(parts[i+2]), float(parts[i+3]), float(parts[i+4]), float(parts[i+5]), float(parts[i+6])
                 path.arcTo(cx-rx, cy-ry, rx*2, ry*2, start, sweep)
