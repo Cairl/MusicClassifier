@@ -255,7 +255,7 @@ class MainWindow(QMainWindow):
 
     def _handle_track_detected(self, track: TrackInfo):
         self._current_track = track
-        self._track_card.set_track(track.display_text(), track.album)
+        self._track_card.set_track(track.song_name, track.artist, track.album)
         self._playlist_grid.set_buttons_active(True)
 
         missing = self._template_lib.get_missing_templates(self._config)
@@ -266,10 +266,12 @@ class MainWindow(QMainWindow):
         self._playlist_grid.disable_missing_playlists(missing_playlists)
 
     def _on_classify(self, playlist_name: str, volume_name: str):
-        if not self._running:
-            return
-        
         import sys
+        print(f"[MAIN] _on_classify: playlist='{playlist_name}' volume='{volume_name}' running={self._running}",
+              file=sys.stderr, flush=True)
+        if not self._running:
+            print("[MAIN]  _running=False, aborting", file=sys.stderr, flush=True)
+            return
         # Use current_track if available, otherwise use cached dots position
         if self._current_track:
             dots_pos = self._current_track.dots_btn_pos
@@ -348,7 +350,7 @@ class MainWindow(QMainWindow):
 
     def _handle_error(self, msg: str):
         print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
-        self._track_card.set_track(f"错误: {msg}", "")
+        self._track_card.set_track(f"错误: {msg}")
         self._running = False
         self._sidebar.play_button.set_active(False)
         self._playlist_grid.set_buttons_active(False)

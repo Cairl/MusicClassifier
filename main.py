@@ -1,18 +1,14 @@
 #! python3.12
 import os
 import sys
-import ctypes
 import traceback
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 
 def main():
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        pass
-
+    # Qt manages DPI awareness automatically
+    
     try:
         from PySide6.QtWidgets import QApplication
         from PySide6.QtGui import QFont

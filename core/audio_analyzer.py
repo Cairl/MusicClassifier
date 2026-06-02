@@ -190,29 +190,46 @@ class AudioAnalyzer:
         harmonic = librosa.effects.harmonic(y=audio)
         harmonic_ratio = float(np.mean(np.abs(harmonic)) / (np.mean(np.abs(audio)) + 1e-10))
 
+        # MFCC rough proxy: higher = more melodic structure
+        mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=3)
+        mfcc_val = float(np.mean(mfcc[1:]))  # skip 0th coefficient (energy)
+
         return {
-            "rms_norm": min(rms_val / 0.1, 1.0),
-            "tempo_norm": min(max((tempo_val - 60) / 160, 0.0), 1.0),
+            "rms_norm": min(rms_val / 0.08, 1.0),
+            "tempo_bpm": tempo_val,
+            "tempo_norm": min(max((tempo_val - 50) / 150, 0.0), 1.0),
             "bandwidth_norm": min(bandwidth_val / 6000.0, 1.0),
-            "centroid_norm": min(centroid_val / 6000.0, 1.0),
+            "centroid_norm": min(centroid_val / 5000.0, 1.0),
             "zcr_norm": min(zcr_val / 0.15, 1.0),
             "harmonic_ratio": min(harmonic_ratio / 1.5, 1.0),
         }
 
     def _map_to_quadrant(self, features: dict) -> MoodCoordinates:
+        # Arousal: energy level
+        #   BPM/tempo (40%) — fastest indicator of energy
+        #   RMS loudness (35%) — volume
+        #   Spectral bandwidth (25%) — spectral spread
         arousal_raw = (
-            features["rms_norm"] * 0.4
-            + features["tempo_norm"] * 0.3
-            + features["bandwidth_norm"] * 0.3
+            features["tempo_norm"] * 0.40
+            + features["rms_norm"] * 0.35
+            + features["bandwidth_norm"] * 0.25
         )
+
+        # Valence: positivity
+        #   Harmonic ratio (45%) — tonal/harmonic = pleasant
+        #   Centroid (30%) — bright = positive
+        #   RMS (-15%) — very loud = aggressive
+        #   ZCR (-10%) — noisy = negative
         valence_raw = (
-            features["centroid_norm"] * 0.35
-            - features["zcr_norm"] * 0.45
-            + features["harmonic_ratio"] * 0.2
+            features["harmonic_ratio"] * 0.45
+            + features["centroid_norm"] * 0.30
+            - features["rms_norm"] * 0.15
+            - features["zcr_norm"] * 0.10
         )
 
         arousal = max(-1.0, min(1.0, arousal_raw * 2 - 1))
-        valence = max(-1.0, min(1.0, (valence_raw - 0.12) / 0.35))
+        # valence_raw ≈ 0.3–0.8 for most music → map 0.35→0, 0.8→1
+        valence = max(-1.0, min(1.0, (valence_raw - 0.35) * 3.0))
 
         if arousal >= 0 and valence >= 0:
             quadrant = "VIGOROUS"

@@ -69,7 +69,7 @@ SIDEBAR_WIDTH = 48
 SIDEBAR_BUTTON_SIZE = 32
 SIDEBAR_ICON_SIZE = 20
 
-CARD_HEIGHT = 64  # slightly taller for mood badge
+CARD_HEIGHT = 90  # slightly taller for mood badge
 
 PLAYLIST_BTN_MIN_HEIGHT = 28
 PLAYLIST_BTN_PADDING = "6px 4px"
@@ -172,13 +172,13 @@ QWidget#track_card {{
     border-radius: {RADIUS_MD};
 }}
 QLabel#track_name {{
-    font-size: {FONT_SIZE_LG};
-    font-weight: {FONT_WEIGHT_MEDIUM};
+    font-size: 24px;
+    font-weight: 600;
     color: {COLOR_ON_SURFACE};
     line-height: 1.3;
 }}
 QLabel#track_subtitle {{
-    font-size: {FONT_SIZE_MD};
+    font-size: 16px;
     color: {COLOR_SUBTLE};
     line-height: 1.2;
 }}

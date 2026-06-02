@@ -1,157 +1,208 @@
 import time
 import traceback
+import sys
 import pyautogui
 from core.models import ClassificationResult
 from core.screen_capture import ScreenCapture
 from core.template_library import TemplateLibrary
 
 
+def _log(msg: str):
+    print(f"[CLICK] {msg}", file=sys.stderr, flush=True)
+
+
 class ActionExecutor:
     def __init__(self, screen_capture: ScreenCapture, template_library: TemplateLibrary,
-                 after_click_ms: int = 700, menu_appear_ms: int = 500):
+                 after_click_ms: int = 1000, menu_appear_ms: int = 1000):
         self._screen_capture = screen_capture
         self._template_lib = template_library
         self._after_click_ms = after_click_ms
         self._menu_appear_ms = menu_appear_ms
 
-    # ── Click helpers ───────────────────────────────────────────
-
     def _highlight(self, x: int, y: int, label: str = ""):
-        """Show a brief red rectangle at (x, y) on screen."""
         try:
+            import threading
+            if threading.current_thread() is not threading.main_thread():
+                return
             from gui.highlight_overlay import HighlightOverlay
             dlg = HighlightOverlay(x, y, 36, 36, label, 300)
             dlg.exec()
         except Exception:
             pass
 
+    # ── Two click modes ────────────────────────────────────────
+
+    def _quick_click(self, template_name: str, use_full_screen: bool = True) -> bool:
+        """Wait 500ms fixed, then screenshot + find + click. For fixed-animation menus."""
+        _log(f"_quick_click('{template_name}')")
+        time.sleep(0.5)
+        if use_full_screen:
+            screen = self._screen_capture.capture_full_screen(delay_ms=0)
+            offset = (0, 0)
+        else:
+            screen = self._screen_capture.capture_full_window(delay_ms=0)
+            if screen is None:
+                return False
+            offset = self._screen_capture._window_rect[:2] \
+                if self._screen_capture._window_rect else (0, 0)
+        if screen is None:
+            return False
+        match = self._template_lib.find_template(screen, template_name)
+        if match is None:
+            _log(f"  ✗ '{template_name}' not found after 500ms")
+            return False
+        sx = match.position[0] + offset[0]
+        sy = match.position[1] + offset[1]
+        _log(f"  found at ({sx},{sy}) conf={match.confidence:.2f}")
+        self._highlight(sx, sy, template_name.split("/")[-1])
+        pyautogui.click(sx, sy)
+        _log(f"  clicked")
+        return True
+
+    def _poll_click(self, template_name: str, use_full_screen: bool = True) -> bool:
+        """Poll screen until template appears (up to 4s), then click. For variable menus."""
+        _log(f"_poll_click('{template_name}')")
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            if use_full_screen:
+                screen = self._screen_capture.capture_full_screen(delay_ms=0)
+                offset = (0, 0)
+            else:
+                screen = self._screen_capture.capture_full_window(delay_ms=0)
+                if screen is None:
+                    time.sleep(0.1)
+                    continue
+                offset = self._screen_capture._window_rect[:2] \
+                    if self._screen_capture._window_rect else (0, 0)
+            if screen is None:
+                time.sleep(0.1)
+                continue
+            match = self._template_lib.find_template(screen, template_name)
+            if match is not None:
+                sx = match.position[0] + offset[0]
+                sy = match.position[1] + offset[1]
+                _log(f"  found at ({sx},{sy}) conf={match.confidence:.2f}")
+                self._highlight(sx, sy, template_name.split("/")[-1])
+                pyautogui.click(sx, sy)
+                _log(f"  clicked")
+                return True
+            time.sleep(0.1)
+        _log(f"  ✗ '{template_name}' not found within 4s")
+        return False
+
+    # ── Dots button ─────────────────────────────────────────────
+
     def click_dots_button(self, dots_pos: tuple[int, int] | None = None) -> bool:
-        """Click the three-dots (⋯) button on the focused song row.
-        Uses saved region center for fixed-position clicking."""
+        _log(f"click_dots_button() called, dots_pos={dots_pos}")
         try:
             offset = self._screen_capture._window_rect[:2] \
                 if self._screen_capture._window_rect else (0, 0)
             region = self._template_lib.get_cached_region("position/more_button")
-
             if region is not None:
                 cx = region["x"] + region["w"] // 2 + offset[0]
-                if dots_pos is not None:
-                    # Fixed X from region, Y from OCR row
-                    click_y = dots_pos[1]
-                else:
-                    click_y = region["y"] + region["h"] // 2 + offset[1]
-                self._highlight(cx, click_y, "⋯")
-                pyautogui.click(cx, click_y)
-                time.sleep(self._after_click_ms / 1000)
+                cy = region["y"] + region["h"] // 2 + offset[1]
+                _log(f"  clicking region center: ({cx}, {cy})")
+                self._highlight(cx, cy, "⋯")
+                pyautogui.click(cx, cy)
+                time.sleep(0.5)
                 return True
             elif dots_pos is not None:
-                # Fallback: OCR position
+                _log(f"  no region, fallback to OCR position {dots_pos}")
                 self._highlight(dots_pos[0], dots_pos[1], "⋯")
                 pyautogui.click(dots_pos[0], dots_pos[1])
-                time.sleep(self._after_click_ms / 1000)
+                time.sleep(0.5)
                 return True
-
+            _log("  FAILED: no region and no OCR position")
             return False
         except Exception:
             traceback.print_exc()
             return False
-
-    def _screenshot_and_find(self, template_name: str,
-                             use_full_screen: bool = False) -> tuple[int, int] | None:
-        """Capture screen and find template. Returns (screen_x, screen_y)."""
-        if use_full_screen:
-            screen = self._screen_capture.capture_full_screen(
-                delay_ms=int(self._menu_appear_ms))
-            offset = (0, 0)
-        else:
-            screen = self._screen_capture.capture_full_window(
-                delay_ms=int(self._menu_appear_ms))
-            if screen is None:
-                return None
-            offset = self._screen_capture._window_rect[:2] \
-                if self._screen_capture._window_rect else (0, 0)
-        if screen is None:
-            return None
-        match = self._template_lib.find_template(screen, template_name)
-        if match is None:
-            return None
-        screen_x = match.position[0] + offset[0]
-        screen_y = match.position[1] + offset[1]
-        return (screen_x, screen_y)
-
-    def _click_template(self, template_name: str,
-                        use_full_screen: bool = False) -> bool:
-        """Find template and click."""
-        pos = self._screenshot_and_find(template_name, use_full_screen)
-        if pos is None:
-            return False
-        self._highlight(pos[0], pos[1], template_name.split("/")[-1])
-        pyautogui.click(pos[0], pos[1])
-        time.sleep(self._after_click_ms / 1000)
-        return True
 
     # ── Classification ──────────────────────────────────────────
 
     def classify_track(self, dots_pos: tuple[int, int],
                        playlist_name: str, volume_name: str,
                        track_name: str) -> ClassificationResult:
-        # Step 1: Click the ⋯ button
+        _log(f"=== classify_track ===")
+        _log(f"  track='{track_name}'  playlist='{playlist_name}'  volume='{volume_name}'")
+        _log(f"  dots_pos={dots_pos}")
+
+        # Step 1: Click ⋯
+        _log("[Step 1/5] Click ⋯ button")
         if not self.click_dots_button(dots_pos):
             return ClassificationResult(
                 success=False, track_name=track_name,
                 target_playlist=playlist_name,
                 message="三点按钮点击失败",
             )
+        _log("  ✓ ⋯ clicked")
 
-        # Step 2: Find and click "添加到播放列表" (context menu — full screen search)
+        # Step 2: Poll for "添加到播放列表" (appears after variable delay)
+        _log("[Step 2/5] Click '添加到播放列表'")
         if not self._template_lib.has_template("ui/add_to_playlist"):
+            _log("  ✗ template ui/add_to_playlist.png missing")
             return ClassificationResult(
                 success=False, track_name=track_name,
                 target_playlist=playlist_name,
                 message="模板 templates/ui/add_to_playlist.png 不存在，请先采集",
             )
-        if not self._click_template("ui/add_to_playlist", use_full_screen=True):
+        if not self._poll_click("ui/add_to_playlist", use_full_screen=True):
+            _log("  ✗ '添加到播放列表' not found")
             return ClassificationResult(
                 success=False, track_name=track_name,
                 target_playlist=playlist_name,
                 message="未找到「添加到播放列表」按钮",
             )
+        _log("  ✓ '添加到播放列表' clicked")
 
-        # Step 3: Try direct playlist click (submenu — full screen)
+        # Step 3: Try direct playlist (fixed 500ms)
+        _log(f"[Step 3/5] Try direct playlist '{playlist_name}'")
         playlist_found = False
-        if self._template_lib.has_template(f"playlists/{playlist_name}"):
-            if self._click_template(f"playlists/{playlist_name}", use_full_screen=True):
+        has_playlist_template = self._template_lib.has_template(f"playlists/{playlist_name}")
+        _log(f"  has template = {has_playlist_template}")
+        if has_playlist_template:
+            if self._quick_click(f"playlists/{playlist_name}", use_full_screen=True):
                 playlist_found = True
+                _log(f"  ✓ playlist '{playlist_name}' found directly")
 
-        # Step 4: If not found directly, click volume then playlist
+        # Step 4: If not found, click volume then playlist (both fixed 500ms)
         if not playlist_found:
+            _log(f"[Step 4/5] Click volume '{volume_name}', then playlist")
             if not self._template_lib.has_template(f"volumes/{volume_name}"):
+                _log(f"  ✗ template volumes/{volume_name}.png missing")
                 return ClassificationResult(
                     success=False, track_name=track_name,
                     target_playlist=playlist_name,
                     message=f"模板 templates/volumes/{volume_name}.png 不存在，请先采集",
                 )
-            if not self._click_template(f"volumes/{volume_name}", use_full_screen=True):
+            if not self._quick_click(f"volumes/{volume_name}", use_full_screen=True):
+                _log(f"  ✗ volume '{volume_name}' not found")
                 return ClassificationResult(
                     success=False, track_name=track_name,
                     target_playlist=playlist_name,
                     message=f"未找到卷「{volume_name}」",
                 )
+            _log(f"  ✓ volume clicked, now finding playlist")
             if not self._template_lib.has_template(f"playlists/{playlist_name}"):
+                _log(f"  ✗ template playlists/{playlist_name}.png missing")
                 return ClassificationResult(
                     success=False, track_name=track_name,
                     target_playlist=playlist_name,
                     message=f"模板 templates/playlists/{playlist_name}.png 不存在，请先采集",
                 )
-            if not self._click_template(f"playlists/{playlist_name}", use_full_screen=True):
+            if not self._quick_click(f"playlists/{playlist_name}", use_full_screen=True):
+                _log(f"  ✗ playlist '{playlist_name}' not found")
                 return ClassificationResult(
                     success=False, track_name=track_name,
                     target_playlist=playlist_name,
                     message=f"未找到歌单「{playlist_name}」",
                 )
+            _log(f"  ✓ playlist clicked via volume")
 
-        # Step 5: Click ⋯ again + Delete (cleanup)
+        # Step 5: Cleanup — toggle menu off
+        _log("[Step 5/5] Click ⋯ + Delete (cleanup)")
         if not self.click_dots_button(dots_pos):
+            _log("  ✗ second ⋯ click failed (cleanup)")
             return ClassificationResult(
                 success=False, track_name=track_name,
                 target_playlist=playlist_name,
@@ -159,7 +210,8 @@ class ActionExecutor:
             )
         try:
             pyautogui.press("delete")
-            time.sleep(self._after_click_ms / 1000)
+            time.sleep(0.3)
+            _log("  ✓ delete pressed")
         except Exception:
             traceback.print_exc()
             return ClassificationResult(
@@ -168,6 +220,7 @@ class ActionExecutor:
                 message="删除操作失败",
             )
 
+        _log(f"=== classify_track SUCCESS ===")
         return ClassificationResult(
             success=True, track_name=track_name,
             target_playlist=playlist_name,
