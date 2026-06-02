@@ -127,6 +127,10 @@ class ActionExecutor:
         _log(f"  track='{track_name}'  playlist='{playlist_name}'  volume='{volume_name}'")
         _log(f"  dots_pos={dots_pos}")
 
+        # Remember original mouse position before any clicks
+        saved_mouse = pyautogui.position()
+        _log(f"  original mouse at ({saved_mouse.x}, {saved_mouse.y})")
+
         # Step 1: Click ⋯
         _log("[Step 1/5] Click ⋯ button")
         if not self.click_dots_button(dots_pos):
@@ -219,6 +223,10 @@ class ActionExecutor:
                 target_playlist=playlist_name,
                 message="删除操作失败",
             )
+
+        # Restore mouse to original position
+        pyautogui.moveTo(saved_mouse.x, saved_mouse.y)
+        _log(f"  mouse restored to ({saved_mouse.x}, {saved_mouse.y})")
 
         _log(f"=== classify_track SUCCESS ===")
         return ClassificationResult(
