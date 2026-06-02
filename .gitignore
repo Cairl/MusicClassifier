@@ -10,4 +10,3 @@ build/
 venv/
 run_sync.bat
 .superpowers/
-templates/
