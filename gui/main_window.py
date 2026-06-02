@@ -207,7 +207,31 @@ class MainWindow(QMainWindow):
             return
         offset = (self._screen_capture._window_rect[:2]
                   if self._screen_capture._window_rect else (0, 0))
-        tracks = self._ocr_reader.read_tracks(image, offset)
+        # Get window size for list-region coordinate conversion
+        win_w = self._screen_capture._window_rect[2] - self._screen_capture._window_rect[0] \
+            if self._screen_capture._window_rect else 0
+        win_h = self._screen_capture._window_rect[3] - self._screen_capture._window_rect[1] \
+            if self._screen_capture._window_rect else 0
+
+        # Use position templates if available for precise OCR
+        # Coordinates are window-relative; need to convert to list-region-relative
+        rl, rt, _, _ = self._screen_capture._list_region_ratio
+
+        song_box = self._template_lib.get_cached_region("position/song_name")
+        artist_box = self._template_lib.get_cached_region("position/artist")
+        tracks = self._ocr_reader.read_tracks(
+            image, offset,
+            song_region_box=(
+                (song_box["x"] - int(win_w * rl),
+                 song_box["y"] - int(win_h * rt),
+                 song_box["w"], song_box["h"])
+            ) if song_box and win_w else None,
+            artist_region_box=(
+                (artist_box["x"] - int(win_w * rl),
+                 artist_box["y"] - int(win_h * rt),
+                 artist_box["w"], artist_box["h"])
+            ) if artist_box and win_w else None,
+        )
         if not tracks:
             self._signals.error_occurred.emit("OCR 未识别到歌曲，请确认播放列表可见")
             return
@@ -242,15 +266,34 @@ class MainWindow(QMainWindow):
         self._playlist_grid.disable_missing_playlists(missing_playlists)
 
     def _on_classify(self, playlist_name: str, volume_name: str):
-        if not self._running or not self._current_track:
+        if not self._running:
             return
+        
+        import sys
+        # Use current_track if available, otherwise use cached dots position
+        if self._current_track:
+            dots_pos = self._current_track.dots_btn_pos
+        else:
+            # No OCR data — use cached position for the dots button
+            region = self._template_lib.get_cached_region("position/more_button")
+            if region:
+                offset = (self._screen_capture._window_rect[:2]
+                          if self._screen_capture._window_rect else (0, 0))
+                cx = region["x"] + region["w"] // 2 + offset[0]
+                cy = region["y"] + region["h"] // 2 + offset[1]
+                dots_pos = (cx, cy)
+            else:
+                from core.models import TrackInfo
+                dots_pos = (0, 0)
+                self._current_track = TrackInfo("未知歌曲", "", "", 0, (0, 0))
+
         track = self._current_track
         self._playlist_grid.set_buttons_active(False)
 
         def worker():
             try:
                 result = self._action_executor.classify_track(
-                    track.dots_btn_pos, playlist_name, volume_name,
+                    dots_pos, playlist_name, volume_name,
                     track.song_name,
                 )
                 self._signals.classification_done.emit(result)

@@ -2,7 +2,7 @@
 
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeyEvent
 
 
 class CountdownOverlay(QDialog):
@@ -15,10 +15,11 @@ class CountdownOverlay(QDialog):
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
-            | Qt.Tool
+            | Qt.Dialog
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
+        self.setFocusPolicy(Qt.StrongFocus)
 
         screen = self.screen() if hasattr(self, 'screen') else None
         if screen:
@@ -63,9 +64,18 @@ class CountdownOverlay(QDialog):
         else:
             self._label.setText(str(self._remaining))
 
-    def keyPressEvent(self, event):
+    def showEvent(self, event):
+        self.activateWindow()
+        self.setFocus(Qt.OtherFocusReason)
+        self.grabKeyboard()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.releaseKeyboard()
+        super().hideEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent):
         """Escape cancels the countdown."""
-        from PySide6.QtGui import QKeyEvent
         if event.key() == Qt.Key_Escape:
             self._timer.stop()
             self.reject()

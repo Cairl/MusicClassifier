@@ -189,10 +189,16 @@ class ScreenshotLibrary(QDialog):
         items: list[tuple[str, str, str, bool]] = []
 
         # UI templates
-        items.append(("ui/more_button", "更多", "UI 素材",
-                       "ui/more_button" in existing))
         items.append(("ui/add_to_playlist", "添加到播放列表", "UI 素材",
                        "ui/add_to_playlist" in existing))
+
+        # Position templates (coords-only, no image)
+        items.append(("position/more_button", "更多按钮位置", "位置素材",
+                       self._template_lib.has_coords("position/more_button")))
+        items.append(("position/song_name", "歌曲名位置", "位置素材",
+                       self._template_lib.has_coords("position/song_name")))
+        items.append(("position/artist", "歌手名位置", "位置素材",
+                       self._template_lib.has_coords("position/artist")))
 
         # Volume templates
         for vol_name in self._config.get_volumes():
@@ -220,7 +226,7 @@ class ScreenshotLibrary(QDialog):
         for name, label, cat, has in entries:
             groups.setdefault(cat, []).append((name, label, cat, has))
 
-        cat_order = ["UI 素材", "卷名素材", "歌单素材"]
+        cat_order = ["UI 素材", "位置素材", "卷名素材", "歌单素材"]
         total = 0
         existing_count = 0
 
@@ -321,12 +327,16 @@ class ScreenshotLibrary(QDialog):
         if cropped.size == 0:
             return
 
-        self._template_lib.save_template(name, cropped)
-        # Save region position for fixed-position elements
+        # Save region position
         window_rect = self._screen_capture._window_rect
-        if window_rect:
-            self._template_lib.save_region(
-                name, x1, y1, x2 - x1, y2 - y1,
-                (window_rect[0], window_rect[1]),
-            )
+        if window_rect is None:
+            window_rect = self._screen_capture.find_window()
+        offset = (window_rect[0], window_rect[1]) if window_rect else (0, 0)
+        self._template_lib.save_region(
+            name, x1, y1, x2 - x1, y2 - y1, offset,
+        )
+
+        # Only save image for non-position templates
+        if not name.startswith("position/"):
+            self._template_lib.save_template(name, cropped)
         self._populate()

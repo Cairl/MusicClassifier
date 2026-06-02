@@ -16,27 +16,37 @@ class ActionExecutor:
 
     # ── Click helpers ───────────────────────────────────────────
 
+    def _highlight(self, x: int, y: int, label: str = ""):
+        """Show a brief red rectangle at (x, y) on screen."""
+        try:
+            from gui.highlight_overlay import HighlightOverlay
+            dlg = HighlightOverlay(x, y, 36, 36, label, 300)
+            dlg.exec()
+        except Exception:
+            pass
+
     def click_dots_button(self, dots_pos: tuple[int, int] | None = None) -> bool:
         """Click the three-dots (⋯) button on the focused song row.
-        Uses cached X (fixed position) + OCR Y (correct row) for precision."""
+        Uses saved region center for fixed-position clicking."""
         try:
-            # Get cached X position (dots button X is fixed in Apple Music)
             offset = self._screen_capture._window_rect[:2] \
                 if self._screen_capture._window_rect else (0, 0)
-            cached = self._template_lib.find_fixed_position("ui/more_button", offset)
+            region = self._template_lib.get_cached_region("position/more_button")
 
-            if cached is not None and dots_pos is not None:
-                # Use cached X (fixed column) + OCR Y (correct row)
-                pyautogui.click(cached[0], dots_pos[1])
-                time.sleep(self._after_click_ms / 1000)
-                return True
-            elif cached is not None:
-                # No OCR position — use cached position directly
-                pyautogui.click(cached[0], cached[1])
+            if region is not None:
+                cx = region["x"] + region["w"] // 2 + offset[0]
+                if dots_pos is not None:
+                    # Fixed X from region, Y from OCR row
+                    click_y = dots_pos[1]
+                else:
+                    click_y = region["y"] + region["h"] // 2 + offset[1]
+                self._highlight(cx, click_y, "⋯")
+                pyautogui.click(cx, click_y)
                 time.sleep(self._after_click_ms / 1000)
                 return True
             elif dots_pos is not None:
-                # Fallback: use OCR position directly
+                # Fallback: OCR position
+                self._highlight(dots_pos[0], dots_pos[1], "⋯")
                 pyautogui.click(dots_pos[0], dots_pos[1])
                 time.sleep(self._after_click_ms / 1000)
                 return True
@@ -75,6 +85,7 @@ class ActionExecutor:
         pos = self._screenshot_and_find(template_name, use_full_screen)
         if pos is None:
             return False
+        self._highlight(pos[0], pos[1], template_name.split("/")[-1])
         pyautogui.click(pos[0], pos[1])
         time.sleep(self._after_click_ms / 1000)
         return True

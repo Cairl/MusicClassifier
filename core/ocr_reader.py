@@ -24,8 +24,85 @@ class OCRReader:
         if self._ocr is None:
             self._ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
 
-    def read_tracks(self, image: np.ndarray, window_offset: tuple[int, int] = (0, 0)) -> list[TrackInfo]:
+    def read_tracks(self, image: np.ndarray, window_offset: tuple[int, int] = (0, 0),
+                    song_region_box: tuple[int, int, int, int] | None = None,
+                    artist_region_box: tuple[int, int, int, int] | None = None) -> list[TrackInfo]:
         self._ensure_ocr()
+        
+        # If position templates exist, only OCR those specific regions
+        if song_region_box is not None or artist_region_box is not None:
+            return self._read_tracks_by_position(
+                image, window_offset, song_region_box, artist_region_box)
+        
+        # Fallback: full-image OCR with column classification
+        return self._read_tracks_full(image, window_offset)
+
+    def _read_tracks_by_position(self, image: np.ndarray,
+                                  window_offset: tuple[int, int],
+                                  song_box: tuple[int, int, int, int] | None,
+                                  artist_box: tuple[int, int, int, int] | None) -> list[TrackInfo]:
+        """OCR using pre-defined position regions instead of full-image scan."""
+        h, w = image.shape[:2]
+        song_name = ""
+        artist = ""
+        row_y = 0
+        dots_pos = (0, 0)
+
+        if song_box:
+            sx, sy, sw, sh = song_box
+            # Convert window-relative to image-relative
+            sx = max(0, sx - window_offset[0])
+            sy = max(0, sy - window_offset[1])
+            sw = min(sw, w - sx)
+            sh = min(sh, h - sy)
+            if sw > 10 and sh > 10:
+                crop = image[sy:sy+sh, sx:sx+sw]
+                result = self._ocr.ocr(crop, cls=True)
+                if result and result[0]:
+                    # Group by Y position, keep only the first row
+                    rows: dict[int, list[str]] = {}
+                    for line in result[0]:
+                        box = line[0]
+                        text = line[1][0]
+                        conf = line[1][1]
+                        if conf < 0.5:
+                            continue
+                        y_center = int(sum(p[1] for p in box) / 4)
+                        row_key = y_center // 20 * 20
+                        rows.setdefault(row_key, []).append(text)
+                    if rows:
+                        first_row_key = min(rows.keys())
+                        song_name = " ".join(rows[first_row_key])
+                        row_y = sy + sh // 2
+
+        if artist_box:
+            ax, ay, aw, ah = artist_box
+            ax = max(0, ax - window_offset[0])
+            ay = max(0, ay - window_offset[1])
+            aw = min(aw, w - ax)
+            ah = min(ah, h - ay)
+            if aw > 10 and ah > 10:
+                crop = image[ay:ay+ah, ax:ax+aw]
+                result = self._ocr.ocr(crop, cls=True)
+                if result and result[0]:
+                    texts = [line[1][0] for line in result[0] if line[1][1] >= 0.5]
+                    if texts:
+                        artist = " ".join(texts)
+                        if row_y == 0:
+                            row_y = ay + ah // 2
+
+        img_w = image.shape[1]
+        dots_pos = self._estimate_dots_pos(row_y, img_w, window_offset)
+        track = TrackInfo(
+            song_name=song_name or "未知歌曲",
+            artist=artist,
+            album="",
+            row_y=row_y,
+            dots_btn_pos=dots_pos,
+        )
+        return [track]
+
+    def _read_tracks_full(self, image: np.ndarray, window_offset: tuple[int, int]) -> list[TrackInfo]:
         result = self._ocr.ocr(image, cls=True)
         if not result or not result[0]:
             return []

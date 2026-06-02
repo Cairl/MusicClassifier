@@ -105,6 +105,10 @@ class TemplateLibrary:
         path = self._template_path(name)
         return path is not None and path.exists()
 
+    def has_coords(self, name: str) -> bool:
+        """Check if coordinates exist, regardless of template image."""
+        return self.get_cached_region(name) is not None
+
     def save_template(self, name: str, image: np.ndarray) -> None:
         path = self._template_path(name)
         if path is None:
@@ -132,12 +136,15 @@ class TemplateLibrary:
         return names
 
     def get_missing_templates(self, config: PlaylistConfig) -> list[str]:
-        required = ["ui/add_to_playlist", "ui/more_button"]
+        required = ["ui/add_to_playlist",
+                     "position/more_button", "position/song_name", "position/artist"]
         for vol_name in config.get_volumes():
             required.append(f"volumes/{vol_name}")
         for mood in config.get_all_moods_flat():
             required.append(f"playlists/{mood['playlist']}")
-        return [name for name in required if not self.has_template(name)]
+        return [name for name in required
+                if not (self.has_coords(name) if name.startswith("position/")
+                        else self.has_template(name))]
 
     def delete_template(self, name: str) -> None:
         path = self._template_path(name)
