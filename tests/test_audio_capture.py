@@ -39,6 +39,17 @@ class TestFindAppleMusicPid:
         assert pid == 5678
 
     @patch("core.audio_capture.ProcessAudioCapture")
+    def test_finds_amplibraryagent(self, mock_pac):
+        mock_proc = MagicMock()
+        mock_proc.name = "AMPLibraryAgent.exe"
+        mock_proc.pid = 5312
+        mock_pac.enumerate_audio_processes.return_value = [mock_proc]
+
+        manager = AudioCaptureManager()
+        pid = manager.find_apple_music_pid()
+        assert pid == 5312
+
+    @patch("core.audio_capture.ProcessAudioCapture")
     def test_returns_none_when_not_found(self, mock_pac):
         mock_proc = MagicMock()
         mock_proc.name = "Chrome.exe"

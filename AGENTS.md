@@ -6,7 +6,9 @@ MusicClassifier is a Windows-based semi-automated Apple Music song classificatio
 
 **Architecture**: Screenshot → OCR recognition → User selection → Simulated mouse clicks. Four core modules are connected through the `TrackInfo` dataclass. All UI automation runs on background threads to keep the PySide6 GUI responsive.
 
-**Tech Stack**: Python 3.12, PySide6, PaddleOCR 2.x, PaddlePaddle 2.x, PyAutoGUI, pygetwindow, OpenCV
+Additionally, the app features a **real-time audio mood analysis** system: it captures process audio from Apple Music via named pipes, extracts features using librosa (RMS, tempo, spectral centroid, bandwidth, ZCR, harmonic ratio), maps them to a valence-arousal quadrant, and recommends the best matching playlist.
+
+**Tech Stack**: Python 3.12, PySide6, PaddleOCR 2.x, PaddlePaddle 2.x, PyAutoGUI, pygetwindow, OpenCV, librosa, process-audio-capture
 
 ## Setup Commands
 
@@ -17,16 +19,17 @@ MusicClassifier is a Windows-based semi-automated Apple Music song classificatio
 ## Development Workflow
 
 - Run the application: `python main.py`
+- **Mood detection starts automatically on launch** (no toggle switch needed)
 - The app requires Apple Music to be open on Windows. It finds the window by title "Apple Music" (configurable in `config.json`).
 - Before taking a screenshot, the app automatically activates and brings the Apple Music window to the foreground.
+- Quadrant chart is always visible, showing "等待音频..." when idle
 
 ## Testing Instructions
 
 - Run all tests: `python -m pytest tests/ -v`
-- Run a single test file: `python -m pytest tests/test_models.py -v`
 - Tests are located in `tests/`, named `test_<module_name>.py`
-- 44 tests across 4 test files
-- Tests use `unittest.mock` to mock `pygetwindow`, `pyautogui`, and `PaddleOCR`. No real windows or OCR needed.
+- 3 test files covering audio analyzer, audio capture manager, and quadrant chart.
+- Tests use `unittest.mock` to mock `pyautogui`, `pygetwindow`, `PaddleOCR`, and `librosa`. No real windows or OCR needed.
 
 ## Code Style
 
@@ -46,9 +49,8 @@ MusicClassifier is a Windows-based semi-automated Apple Music song classificatio
 - No custom `paintEvent` for DPI scaling compatibility
 
 ### Layout
-- Sidebar (48px): white background + 1px `#e8eaed` separator; play button at top, menu button at bottom
-- Sidebar icon buttons: 32×32 transparent background + `#5f6368` icons, hover shows `#e8eaed` circle, MD3 Filled Tonal style
-- Main area: track info card (12px rounded, no border, light shadow) → mood tag row → 5-column playlist grid (volume name + VIGOROUS/TENSE/MELANCHOLY/CALM)
+|- Sidebar (48px): white background + 1px `#e8eaed` separator; play button at top, library and about buttons at bottom
+|- Main area: track info card (song name + album, 12px rounded, no border) → mood status bar → quadrant chart → 5-column playlist grid
 - Window width fixed at 240 (DPI-scaled), height adapts to content
 - Grid spacing 4px, card padding 10px
 
@@ -70,21 +72,50 @@ MusicClassifier/
 │   ├── ocr_reader.py        # PaddleOCR-based song and playlist name recognition
 │   ├── action_executor.py   # Mouse automation (click three-dots menu → add to playlist)
 │   ├── playlist_config.py   # Config loading, volume/mood/playlist parsing
-│   └── template_library.py  # Template collection, matching, and missing detection
+│   ├── template_library.py  # Template collection, matching, and missing detection
+│   ├── audio_capture.py     # NamedPipe-based Apple Music process audio capture
+│   └── audio_analyzer.py    # librosa feature extraction + valence-arousal mood analysis
 ├── gui/
-│   ├── main_window.py       # PySide6 main window, MD3 sidebar + 5-column playlist grid
-│   ├── icon_button.py       # Rounded rectangle icon button (QToolButton + QIcon)
-│   ├── settings_popover.py  # Settings popover menu (template capture / about)
-│   ├── capture_wizard.py    # Template capture wizard
-│   └── screenshot_overlay.py # Screenshot overlay for region selection
+│   ├── main_window.py       # Main window controller — assembles components, wires signals
+│   ├── theme.py             # Design system — color tokens, typography, spacing, shared QSS
+│   ├── icons.py             # SVG path icon utilities (play, library, about)
+│   ├── sidebar.py           # Sidebar component — play / library / about buttons
+│   ├── track_card.py        # Track info card — song name, album
+│   ├── playlist_grid.py     # Playlist button grid — 5-column grid from config
+│   ├── quadrant_chart.py    # Valence-arousal quadrant visualization
+│   ├── screenshot_library.py# Screenshot library — vertical list of all templates with ✓/✗ status
+│   ├── screenshot_overlay.py# Screenshot overlay for region selection
+│   ├── countdown_overlay.py # 5-second countdown before capture
+│   └── icons.py             # SVG path icon utilities
 └── tests/
-    ├── test_models.py
-    ├── test_ocr_reader.py
-    ├── test_playlist_config.py
-    ├── test_screen_capture.py
-    ├── test_action_executor.py
-    └── test_template_library.py
+    ├── test_audio_analyzer.py
+    ├── test_audio_capture.py
+    └── test_quadrant_chart.py
 ```
+
+## UI Architecture (Component-based)
+
+The GUI follows a **controller + component** pattern using PySide6:
+
+```
+main_window.py (controller)
+  ├── theme.py       — design tokens (colors, fonts, spacing, shared QSS)
+  ├── icons.py       — SVG icon drawing utility
+  ├── sidebar.py     — Sidebar component (play/record/settings)
+  ├── track_card.py  — Track info card component
+  ├── playlist_grid.py — 5-column playlist grid component
+  ├── quadrant_chart.py — Mood quadrant visualization (QWidget paintEvent)
+  ├── settings_popover.py — Popup menu (standalone QWidget)
+  ├── capture_wizard.py — Template capture dialog (QDialog)
+  └── screenshot_overlay.py — Full-screen region selector (QDialog)
+```
+
+**Key principles:**
+- `main_window.py` owns all services (OCR, audio, automation) and wires signals — it's the orchestrator, not the UI builder
+- Each view component is a focused QWidget subclass with its own QSS, signals, and public API
+- `theme.py` is the single source of truth for all colors, sizes, and shared style sheets — never hardcode `#fafafa` or `#5f6368` in component files
+- `icons.py` centralizes SVG path data and rendering — components import icon functions instead of drawing paths inline
+- Components communicate outward via **Qt Signals** / **callbacks**, never by reaching into sibling components
 
 ## Key Implementation Details
 
@@ -111,7 +142,16 @@ Default screenshot region ratio: `(0.10, 0.30, 0.98, 0.88)` — left 10%, top 30
 
 ### Action Flow
 
-`ActionExecutor.classify_track()` performs: click three-dots button → wait → click "Add to Playlist" → wait → click target playlist name. Each step locates targets via fresh screenshot + OCR, with configurable delays between steps.
+`ActionExecutor.classify_track()` performs: click three-dots button → wait → click "Add to Playlist" → wait → click target playlist name. Each step locates targets via fresh screenshot + template matching, with configurable delays between steps.
+
+### Audio Mood Analysis
+
+1. `AudioCaptureManager.start()` — finds Apple Music PID, creates NamedPipe, streams audio via `process-audio-capture`
+2. `AudioAnalyzer._analysis_loop()` — every 3s captures latest N seconds of stereo audio → converts to mono
+3. `_extract_features()` — computes RMS, tempo, spectral centroid, bandwidth, ZCR, harmonic ratio, normalizes each to [0,1]
+4. `_map_to_quadrant()` — arousal = `RMS×0.4 + tempo×0.3 + bandwidth×0.3`; valence = `centroid×0.35 - ZCR×0.45 + harmonic×0.2`
+5. Stabilization: need 4 consistent quadrant readings before locking (confidence ≥ 60%)
+6. Boundary detection: if 5 consecutive coordinates deviate > 0.8 (locked: 1.2) from rolling mean → reset analysis (new song detected)
 
 ## Common Pitfalls
 
@@ -120,3 +160,4 @@ Default screenshot region ratio: `(0.10, 0.30, 0.98, 0.88)` — left 10%, top 30
 - **Window activation**: May silently fail on Windows. `activate_window()` has a minimize→restore fallback.
 - **4K display scaling**: `pygetwindow` may return negative coordinates (e.g., -12) for maximized windows on Windows. This is normal.
 - **OCR accuracy**: Leftmost column song names are small and often partially recognized. The two-pass OCR (full image + 3x upscaled song region) mitigates this but is not perfect.
+- **Audio capture**: `process-audio-capture` requires Windows 10 2004+ (named pipe support). `AudioCaptureManager` only works when Apple Music is playing audio.

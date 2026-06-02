@@ -48,8 +48,14 @@ class ScreenCapture:
         w = right - left
         h = bottom - top
         rl, rt, rr, rb = self._list_region_ratio
-        region = (int(left + w * rl), int(top + h * rt), int(left + w * rr), int(top + h * rb))
-        screenshot = pyautogui.screenshot(region=region)
+        region_left = int(left + w * rl)
+        region_top = int(top + h * rt)
+        region_right = int(left + w * rr)
+        region_bottom = int(top + h * rb)
+        # pyautogui.screenshot region = (left, top, width, height)
+        screenshot = pyautogui.screenshot(
+            region=(region_left, region_top,
+                    region_right - region_left, region_bottom - region_top))
         return np.array(screenshot)
 
     def capture_full_window(self, delay_ms: int = 300) -> np.ndarray | None:

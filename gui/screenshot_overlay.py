@@ -1,7 +1,7 @@
 import numpy as np
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QWidget
 from PySide6.QtCore import Qt, QPoint, QRect, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QKeyEvent, QScreen, QGuiApplication, QImage, QPixmap
+from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QKeyEvent, QScreen, QGuiApplication, QImage, QPixmap, QPainterPath
 
 
 class ScreenshotOverlay(QDialog):
@@ -17,6 +17,8 @@ class ScreenshotOverlay(QDialog):
         self._end_point: QPoint | None = None
         self._confirmed_rect: QRect | None = None
         self._background_pixmap: QPixmap | None = None
+        screen = QGuiApplication.primaryScreen()
+        self._dpr = screen.devicePixelRatio() if screen else 1.0
         self._init_ui()
         self._init_background()
 
@@ -24,7 +26,7 @@ class ScreenshotOverlay(QDialog):
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
-            | Qt.Tool
+            | Qt.Dialog
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(Qt.CrossCursor)
@@ -38,9 +40,9 @@ class ScreenshotOverlay(QDialog):
             self.setGeometry(0, 0, self._w, self._h)
 
     def _init_background(self):
-        import cv2
-        rgb = cv2.cvtColor(self._screenshot, cv2.COLOR_BGR2RGB)
-        h, w = rgb.shape[:2]
+        # Screenshot is RGB from pyautogui, display directly
+        h, w = self._screenshot.shape[:2]
+        rgb = self._screenshot
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
         self._background_pixmap = QPixmap.fromImage(qimg.copy())
 
@@ -80,19 +82,30 @@ class ScreenshotOverlay(QDialog):
         if self._background_pixmap:
             painter.drawPixmap(self.rect(), self._background_pixmap)
 
-        overlay = QColor(245, 245, 247, 160)
-        painter.fillRect(self.rect(), overlay)
+        # Dark semi-transparent overlay with a cutout for the selection
+        overlay = QColor(0, 0, 0, 140)
 
         if self._start_point and self._end_point:
             rect = QRect(self._start_point, self._end_point).normalized()
-            painter.setCompositionMode(QPainter.CompositionMode_Clear)
-            painter.fillRect(rect, Qt.transparent)
-            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-            painter.setPen(QPen(QColor(95, 99, 104), 2))
+            # Subtract the selected region from the overlay
+            path = QPainterPath()
+            path.addRect(self.rect())
+            hole = QPainterPath()
+            hole.addRect(rect)
+            path = path.subtracted(hole)
+            painter.fillPath(path, overlay)
+
+            # White border around selected region
+            painter.setPen(QPen(QColor(255, 255, 255), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
 
-            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            # Crosshair center markers
+            painter.setPen(QPen(QColor(255, 255, 255, 120), 1))
             self._draw_crosshair(painter, rect)
+        else:
+            # No selection yet — cover entire screen
+            painter.fillRect(self.rect(), overlay)
 
         painter.end()
 
@@ -168,7 +181,15 @@ class ScreenshotOverlay(QDialog):
 
     def _on_confirm(self):
         if self._confirmed_rect:
-            self.region_selected.emit(self._confirmed_rect)
+            # Scale from Qt device-independent pixels to physical pixels
+            r = self._confirmed_rect
+            rect = QRect(
+                int(r.x() * self._dpr),
+                int(r.y() * self._dpr),
+                int(r.width() * self._dpr),
+                int(r.height() * self._dpr),
+            )
+            self.region_selected.emit(rect)
         self.close()
 
     def _on_cancel(self):

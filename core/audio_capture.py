@@ -17,7 +17,7 @@ class AudioSample:
 
 
 class AudioCaptureManager:
-    BUFFER_SECONDS = 10
+    BUFFER_SECONDS = 25
 
     def __init__(self):
         self._buffer: deque[AudioSample] = deque()
@@ -44,7 +44,7 @@ class AudioCaptureManager:
             return None
         for proc in processes:
             name_lower = proc.name.lower()
-            if "applemusic" in name_lower or "apple music" in name_lower:
+            if "applemusic" in name_lower or "apple music" in name_lower or "amplibraryagent" in name_lower:
                 return proc.pid
         return None
 
