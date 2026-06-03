@@ -8,6 +8,11 @@ class TrackInfo:
     album: str
     row_y: int
     dots_btn_pos: tuple[int, int]
+    ocr_boxes: list[tuple[int, int, int, int, str]] = None
+
+    def __post_init__(self):
+        if self.ocr_boxes is None:
+            self.ocr_boxes = []
 
     def display_text(self) -> str:
         if self.artist:

@@ -144,7 +144,7 @@ class ScreenshotOverlay(QDialog):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
             self._selecting = True
-            self._start_point = event.pos()
+            self._start_point = QPoint(self.width() // 2, self.height() // 2)
             self._end_point = event.pos()
             self._toolbar.setVisible(False)
             self.update()

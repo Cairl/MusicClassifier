@@ -35,7 +35,22 @@ class AudioAnalyzer:
     STABILIZATION_COUNT = 4
     COORD_HISTORY = 5
     LOCK_CONFIDENCE = 0.6
-    SILENCE_RMS_THRESHOLD = 0.008  # below this = no music playing
+    SILENCE_RMS_THRESHOLD = 0.008
+
+    FEATURE_EMA_ALPHA = 0.35
+    FEATURE_BUFFER_SIZE = 5
+    BOUNDARY_COOLDOWN = 2
+
+    NORM_RMS = 0.08
+    NORM_TEMPO_MIN = 50.0
+    NORM_TEMPO_RANGE = 150.0
+    NORM_BANDWIDTH = 6000.0
+    NORM_CENTROID = 5000.0
+    NORM_ZCR = 0.15
+    NORM_HARMONIC = 1.5
+    NORM_CONTRAST = 35.0
+    NORM_ONSET = 1.5
+    NORM_ROLLOFF = 8000.0
 
     def __init__(self, capture_manager: AudioCaptureManager):
         self._capture = capture_manager
@@ -45,12 +60,15 @@ class AudioAnalyzer:
         self._recent_quadrants: deque[str] = deque(maxlen=self.HISTORY_SIZE)
         self._recent_coords: deque[tuple[float, float]] = deque(maxlen=self.COORD_HISTORY)
         self._boundary_countdown: int = 0
+        self._boundary_cooldown: int = 0
         self._current_confidence: float = 0.0
         self._warmup_window: float = self.WARMUP_START
         self._locked: bool = False
         self._locked_quadrant: str = ""
         self._locked_arousal: float = 0.0
         self._locked_valence: float = 0.0
+        self._feature_buffer: deque[dict] = deque(maxlen=self.FEATURE_BUFFER_SIZE)
+        self._smoothed_features: dict = {}
 
     @property
     def signals(self) -> AnalyzerSignals:
@@ -60,12 +78,7 @@ class AudioAnalyzer:
         if self._running:
             return
         self._running = True
-        self._recent_quadrants.clear()
-        self._recent_coords.clear()
-        self._boundary_countdown = 0
-        self._warmup_window = self.WARMUP_START
-        self._locked = False
-        self._locked_quadrant = ""
+        self._reset_state()
         self._thread = threading.Thread(target=self._analysis_loop, daemon=True)
         self._thread.start()
 
@@ -75,6 +88,17 @@ class AudioAnalyzer:
             self._thread.join(timeout=3.0)
             self._thread = None
 
+    def _reset_state(self) -> None:
+        self._recent_quadrants.clear()
+        self._recent_coords.clear()
+        self._boundary_countdown = 0
+        self._boundary_cooldown = 0
+        self._warmup_window = self.WARMUP_START
+        self._locked = False
+        self._locked_quadrant = ""
+        self._feature_buffer.clear()
+        self._smoothed_features = {}
+
     def _analysis_loop(self) -> None:
         silence_streak = 0
         while self._running:
@@ -82,7 +106,6 @@ class AudioAnalyzer:
                 audio = self._capture.get_snapshot(self._warmup_window)
                 if audio is not None:
                     mono = np.mean(audio, axis=0).astype(np.float32)
-                    # Skip analysis if audio is too quiet (no music playing)
                     rms = float(np.sqrt(np.mean(mono ** 2)))
                     if rms < self.SILENCE_RMS_THRESHOLD:
                         silence_streak += 1
@@ -116,9 +139,12 @@ class AudioAnalyzer:
             self._recent_quadrants.clear()
             self._recent_coords.clear()
             self._boundary_countdown = self.STABILIZATION_COUNT
+            self._boundary_cooldown = self.BOUNDARY_COOLDOWN
             self._warmup_window = self.WARMUP_START
             self._locked = False
             self._locked_quadrant = ""
+            self._feature_buffer.clear()
+            self._smoothed_features = {}
             self._signals.boundary_detected.emit()
 
         self._recent_coords.append(coord)
@@ -137,7 +163,7 @@ class AudioAnalyzer:
             self._boundary_countdown -= 1
             result.confidence = 0.0
         else:
-            result.confidence = self._compute_confidence()
+            result.confidence = self._compute_confidence(result)
 
         self._current_confidence = result.confidence
 
@@ -153,6 +179,9 @@ class AudioAnalyzer:
         )
 
     def _detect_boundary(self, current: tuple[float, float]) -> bool:
+        if self._boundary_cooldown > 0:
+            self._boundary_cooldown -= 1
+            return False
         if len(self._recent_coords) < 3:
             return False
 
@@ -169,7 +198,8 @@ class AudioAnalyzer:
 
     def _analyze_chunk(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
         features = self._extract_features(audio, sr)
-        return self._map_to_quadrant(features)
+        smoothed = self._apply_temporal_smoothing(features)
+        return self._map_to_quadrant(smoothed)
 
     def _extract_features(self, audio: np.ndarray, sr: int) -> dict:
         rms = librosa.feature.rms(y=audio)[0]
@@ -190,46 +220,80 @@ class AudioAnalyzer:
         harmonic = librosa.effects.harmonic(y=audio)
         harmonic_ratio = float(np.mean(np.abs(harmonic)) / (np.mean(np.abs(audio)) + 1e-10))
 
-        # MFCC rough proxy: higher = more melodic structure
-        mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=3)
-        mfcc_val = float(np.mean(mfcc[1:]))  # skip 0th coefficient (energy)
+        contrast = librosa.feature.spectral_contrast(y=audio, sr=sr, n_bands=6)
+        contrast_val = float(np.mean(contrast))
+
+        flatness = librosa.feature.spectral_flatness(y=audio)[0]
+        flatness_val = float(np.mean(flatness))
+
+        onset_env = librosa.onset.onset_strength(y=audio, sr=sr)
+        onset_val = float(np.mean(np.log1p(onset_env)))
+
+        rolloff = librosa.feature.spectral_rolloff(y=audio, sr=sr)[0]
+        rolloff_val = float(np.mean(rolloff))
+
+        mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
+        mfcc_val = float(np.mean(np.abs(mfcc[1:])))
 
         return {
-            "rms_norm": min(rms_val / 0.08, 1.0),
+            "rms_norm": min(rms_val / self.NORM_RMS, 1.0),
             "tempo_bpm": tempo_val,
-            "tempo_norm": min(max((tempo_val - 50) / 150, 0.0), 1.0),
-            "bandwidth_norm": min(bandwidth_val / 6000.0, 1.0),
-            "centroid_norm": min(centroid_val / 5000.0, 1.0),
-            "zcr_norm": min(zcr_val / 0.15, 1.0),
-            "harmonic_ratio": min(harmonic_ratio / 1.5, 1.0),
+            "tempo_norm": min(max((tempo_val - self.NORM_TEMPO_MIN) / self.NORM_TEMPO_RANGE, 0.0), 1.0),
+            "bandwidth_norm": min(bandwidth_val / self.NORM_BANDWIDTH, 1.0),
+            "centroid_norm": min(centroid_val / self.NORM_CENTROID, 1.0),
+            "zcr_norm": min(zcr_val / self.NORM_ZCR, 1.0),
+            "harmonic_ratio": min(harmonic_ratio / self.NORM_HARMONIC, 1.0),
+            "spectral_contrast": min(contrast_val / self.NORM_CONTRAST, 1.0),
+            "flatness": min(flatness_val * 10.0, 1.0),
+            "onset_strength": min(onset_val / self.NORM_ONSET, 1.0),
+            "rolloff_norm": min(rolloff_val / self.NORM_ROLLOFF, 1.0),
+            "mfcc_val": mfcc_val,
         }
 
+    def _apply_temporal_smoothing(self, features: dict) -> dict:
+        self._feature_buffer.append(features)
+
+        if not self._smoothed_features:
+            self._smoothed_features = {k: v for k, v in features.items()}
+            return dict(self._smoothed_features)
+
+        alpha = self.FEATURE_EMA_ALPHA
+        for key in features:
+            if key in self._smoothed_features:
+                self._smoothed_features[key] = (
+                    alpha * features[key] + (1 - alpha) * self._smoothed_features[key]
+                )
+            else:
+                self._smoothed_features[key] = features[key]
+
+        return dict(self._smoothed_features)
+
     def _map_to_quadrant(self, features: dict) -> MoodCoordinates:
-        # Arousal: energy level
-        #   BPM/tempo (40%) — fastest indicator of energy
-        #   RMS loudness (35%) — volume
-        #   Spectral bandwidth (25%) — spectral spread
+        onset = features.get("onset_strength", 0.5)
+        contrast = features.get("spectral_contrast", 0.5)
+        flatness = features.get("flatness", 0.1)
+        rolloff = features.get("rolloff_norm", 0.5)
+
         arousal_raw = (
-            features["tempo_norm"] * 0.40
-            + features["rms_norm"] * 0.35
-            + features["bandwidth_norm"] * 0.25
+            features["tempo_norm"] * 0.35
+            + features["rms_norm"] * 0.25
+            + features["bandwidth_norm"] * 0.10
+            + onset * 0.15
+            + rolloff * 0.15
         )
 
-        # Valence: positivity
-        #   Harmonic ratio (45%) — tonal/harmonic = pleasant
-        #   Centroid (30%) — bright = positive
-        #   RMS (-15%) — very loud = aggressive
-        #   ZCR (-10%) — noisy = negative
         valence_raw = (
-            features["harmonic_ratio"] * 0.45
-            + features["centroid_norm"] * 0.30
-            - features["rms_norm"] * 0.15
-            - features["zcr_norm"] * 0.10
+            contrast * 0.30
+            + features["centroid_norm"] * 0.15
+            + features["harmonic_ratio"] * 0.20
+            + rolloff * 0.15
+            - features["rms_norm"] * 0.10
+            - features["zcr_norm"] * 0.05
+            - flatness * 0.05
         )
 
         arousal = max(-1.0, min(1.0, arousal_raw * 2 - 1))
-        # valence_raw ≈ 0.3–0.8 for most music → map 0.35→0, 0.8→1
-        valence = max(-1.0, min(1.0, (valence_raw - 0.35) * 3.0))
+        valence = max(-1.0, min(1.0, (valence_raw - 0.30) * 2.5))
 
         if arousal >= 0 and valence >= 0:
             quadrant = "VIGOROUS"
@@ -247,9 +311,26 @@ class AudioAnalyzer:
             confidence=0.0
         )
 
-    def _compute_confidence(self) -> float:
+    def _compute_confidence(self, current: MoodCoordinates) -> float:
         if not self._recent_quadrants:
             return 0.0
-        most_common = max(set(self._recent_quadrants), key=list(self._recent_quadrants).count)
-        count = list(self._recent_quadrants).count(most_common)
-        return count / len(self._recent_quadrants)
+
+        quadrants = list(self._recent_quadrants)
+        weights = list(range(1, len(quadrants) + 1))
+        total_weight = sum(weights)
+
+        weighted_counts: dict[str, float] = {}
+        for q, w in zip(quadrants, weights):
+            weighted_counts[q] = weighted_counts.get(q, 0.0) + w
+
+        current_quadrant = current.quadrant
+        dominant_quadrant = max(weighted_counts, key=weighted_counts.get)
+
+        if current_quadrant != dominant_quadrant:
+            return 0.0
+
+        consistency = weighted_counts[dominant_quadrant] / total_weight
+        margin = min(abs(current.arousal), abs(current.valence))
+        margin_factor = min(margin / 0.4, 1.0)
+
+        return consistency * 0.6 + margin_factor * 0.4

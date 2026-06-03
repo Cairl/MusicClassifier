@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._running = False
         self._mood_active = False
         self._mood_unsupported = not ProcessAudioCapture.is_supported()
+        self._ocr_overlays: list = []
 
         self.setWindowIcon(QIcon())
 
@@ -257,6 +258,7 @@ class MainWindow(QMainWindow):
         self._current_track = track
         self._track_card.set_track(track.song_name, track.artist, track.album)
         self._playlist_grid.set_buttons_active(True)
+        self._show_ocr_highlights(track)
 
         missing = self._template_lib.get_missing_templates(self._config)
         missing_playlists = {
@@ -264,6 +266,45 @@ class MainWindow(QMainWindow):
             for name in missing if name.startswith("playlists/")
         }
         self._playlist_grid.disable_missing_playlists(missing_playlists)
+
+    def _show_ocr_highlights(self, track: TrackInfo) -> None:
+        for overlay in self._ocr_overlays:
+            if overlay.isVisible():
+                overlay.close()
+        self._ocr_overlays.clear()
+
+        if not track.ocr_boxes:
+            return
+        try:
+            from gui.highlight_overlay import HighlightOverlay
+        except Exception:
+            return
+
+        screen = QGuiApplication.primaryScreen()
+        dpr = screen.devicePixelRatio() if screen else 1.0
+        win_rect = self._screen_capture._window_rect
+        if not win_rect:
+            return
+
+        rl, rt, _, _ = self._screen_capture._list_region_ratio
+        win_w = win_rect[2] - win_rect[0]
+        win_h = win_rect[3] - win_rect[1]
+        list_left_phys = win_rect[0] + int(win_w * rl)
+        list_top_phys = win_rect[1] + int(win_h * rt)
+
+        for sx, sy, sw, sh, label in track.ocr_boxes:
+            screen_x = int((list_left_phys + sx) / dpr)
+            screen_y = int((list_top_phys + sy) / dpr)
+            screen_w = max(int(sw / dpr), 20)
+            screen_h = max(int(sh / dpr), 12)
+            overlay = HighlightOverlay(
+                screen_x + screen_w // 2,
+                screen_y + screen_h // 2,
+                screen_w, screen_h,
+                label, 1200,
+            )
+            overlay.show()
+            self._ocr_overlays.append(overlay)
 
     def _on_classify(self, playlist_name: str, volume_name: str):
         import sys
@@ -351,9 +392,8 @@ class MainWindow(QMainWindow):
     def _handle_error(self, msg: str):
         print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
         self._track_card.set_track(f"错误: {msg}")
-        self._running = False
-        self._sidebar.play_button.set_active(False)
-        self._playlist_grid.set_buttons_active(False)
+        if self._running:
+            self._playlist_grid.set_buttons_active(True)
 
     # ─────────────────────── Dialogs ────────────────────────────────
 

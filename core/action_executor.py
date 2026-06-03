@@ -1,6 +1,7 @@
 import time
 import traceback
 import sys
+import numpy as np
 import pyautogui
 from core.models import ClassificationResult
 from core.screen_capture import ScreenCapture
@@ -118,6 +119,38 @@ class ActionExecutor:
             traceback.print_exc()
             return False
 
+    def _stable_click(self, template_name: str, max_wait: float = 6.0) -> bool:
+        _log(f"_stable_click('{template_name}')")
+        deadline = time.time() + max_wait
+        while time.time() < deadline:
+            screen = self._screen_capture.capture_full_screen(delay_ms=0)
+            if screen is None:
+                time.sleep(0.1)
+                continue
+            match = self._template_lib.find_template(screen, template_name)
+            if match is None:
+                time.sleep(0.1)
+                continue
+
+            time.sleep(0.05)
+            screen2 = self._screen_capture.capture_full_screen(delay_ms=0)
+            if screen2 is None:
+                time.sleep(0.1)
+                continue
+            if screen2.shape != screen.shape or not np.array_equal(screen, screen2):
+                _log(f"  screen shifted, re-checking...")
+                continue
+
+            sx, sy = match.position
+            _log(f"  stable at ({sx},{sy}) conf={match.confidence:.2f}")
+            self._highlight(sx, sy, template_name.split("/")[-1])
+            pyautogui.click(sx, sy)
+            _log(f"  clicked")
+            return True
+
+        _log(f"  ✗ '{template_name}' not found or screen never stable within {max_wait}s")
+        return False
+
     # ── Classification ──────────────────────────────────────────
 
     def classify_track(self, dots_pos: tuple[int, int],
@@ -141,8 +174,8 @@ class ActionExecutor:
             )
         _log("  ✓ ⋯ clicked")
 
-        # Step 2: Poll for "添加到播放列表" (appears after variable delay)
-        _log("[Step 2/5] Click '添加到播放列表'")
+        # Step 2: Wait for screen to stabilize, then click "添加到播放列表"
+        _log("[Step 2/5] Stable-click '添加到播放列表'")
         if not self._template_lib.has_template("ui/add_to_playlist"):
             _log("  ✗ template ui/add_to_playlist.png missing")
             return ClassificationResult(
@@ -150,12 +183,12 @@ class ActionExecutor:
                 target_playlist=playlist_name,
                 message="模板 templates/ui/add_to_playlist.png 不存在，请先采集",
             )
-        if not self._poll_click("ui/add_to_playlist", use_full_screen=True):
-            _log("  ✗ '添加到播放列表' not found")
+        if not self._stable_click("ui/add_to_playlist"):
+            _log("  ✗ '添加到播放列表' not found or screen unstable")
             return ClassificationResult(
                 success=False, track_name=track_name,
                 target_playlist=playlist_name,
-                message="未找到「添加到播放列表」按钮",
+                message="未找到「添加到播放列表」按钮或画面未稳定",
             )
         _log("  ✓ '添加到播放列表' clicked")
 

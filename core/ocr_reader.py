@@ -41,16 +41,15 @@ class OCRReader:
                                   window_offset: tuple[int, int],
                                   song_box: tuple[int, int, int, int] | None,
                                   artist_box: tuple[int, int, int, int] | None) -> list[TrackInfo]:
-        """OCR using pre-defined position regions instead of full-image scan."""
         h, w = image.shape[:2]
         song_name = ""
         artist = ""
         row_y = 0
         dots_pos = (0, 0)
+        ocr_boxes: list[tuple[int, int, int, int, str]] = []
 
         if song_box:
             sx, sy, sw, sh = song_box
-            # Convert window-relative to image-relative
             sx = max(0, sx - window_offset[0])
             sy = max(0, sy - window_offset[1])
             sw = min(sw, w - sx)
@@ -59,7 +58,6 @@ class OCRReader:
                 crop = image[sy:sy+sh, sx:sx+sw]
                 result = self._ocr.ocr(crop, cls=True)
                 if result and result[0]:
-                    # Group by Y position, keep only the first row
                     rows: dict[int, list[str]] = {}
                     for line in result[0]:
                         box = line[0]
@@ -67,6 +65,11 @@ class OCRReader:
                         conf = line[1][1]
                         if conf < 0.5:
                             continue
+                        bx1 = int(min(p[0] for p in box)) + sx
+                        by1 = int(min(p[1] for p in box)) + sy
+                        bx2 = int(max(p[0] for p in box)) + sx
+                        by2 = int(max(p[1] for p in box)) + sy
+                        ocr_boxes.append((bx1, by1, bx2 - bx1, by2 - by1, "song"))
                         y_center = int(sum(p[1] for p in box) / 4)
                         row_key = y_center // 20 * 20
                         rows.setdefault(row_key, []).append(text)
@@ -85,7 +88,19 @@ class OCRReader:
                 crop = image[ay:ay+ah, ax:ax+aw]
                 result = self._ocr.ocr(crop, cls=True)
                 if result and result[0]:
-                    texts = [line[1][0] for line in result[0] if line[1][1] >= 0.5]
+                    texts = []
+                    for line in result[0]:
+                        text = line[1][0]
+                        conf = line[1][1]
+                        if conf < 0.5:
+                            continue
+                        texts.append(text)
+                        box = line[0]
+                        bx1 = int(min(p[0] for p in box)) + ax
+                        by1 = int(min(p[1] for p in box)) + ay
+                        bx2 = int(max(p[0] for p in box)) + ax
+                        by2 = int(max(p[1] for p in box)) + ay
+                        ocr_boxes.append((bx1, by1, bx2 - bx1, by2 - by1, "artist"))
                     if texts:
                         artist = " ".join(texts)
                         if row_y == 0:
@@ -99,6 +114,7 @@ class OCRReader:
             album="",
             row_y=row_y,
             dots_btn_pos=dots_pos,
+            ocr_boxes=ocr_boxes,
         )
         return [track]
 
@@ -119,7 +135,6 @@ class OCRReader:
         tracks = self._parse_to_tracks(ocr_lines, image.shape[1], window_offset)
         tracks = self._refine_song_names(image, tracks, window_offset)
         return tracks
-
     def _is_header_text(self, text: str) -> bool:
         for kw in self.HEADER_KEYWORDS:
             if kw in text:
@@ -164,13 +179,19 @@ class OCRReader:
             song_parts = []
             artist_parts = []
             album_parts = []
+            ocr_boxes: list[tuple[int, int, int, int, str]] = []
             for box, text, conf, col, _ in items:
+                bw = box[2] - box[0]
+                bh = box[3] - box[1]
                 if col == "song":
                     song_parts.append(text)
+                    ocr_boxes.append((box[0], box[1], bw, bh, "song"))
                 elif col == "artist":
                     artist_parts.append(text)
+                    ocr_boxes.append((box[0], box[1], bw, bh, "artist"))
                 elif col == "album":
                     album_parts.append(text)
+                    ocr_boxes.append((box[0], box[1], bw, bh, "album"))
             song_name = " ".join(song_parts) if song_parts else ""
             artist = " ".join(artist_parts) if artist_parts else ""
             album = " ".join(album_parts) if album_parts else ""
@@ -185,6 +206,7 @@ class OCRReader:
                 album=album,
                 row_y=row_y,
                 dots_btn_pos=dots_pos,
+                ocr_boxes=ocr_boxes,
             ))
         return tracks
 

@@ -28,7 +28,7 @@ Additionally, the app features a **real-time audio mood analysis** system: it ca
 
 - Run all tests: `python -m pytest tests/ -v`
 - Tests are located in `tests/`, named `test_<module_name>.py`
-- 3 test files covering audio analyzer, audio capture manager, and quadrant chart.
+- 3 test files covering audio analyzer (including temporal smoothing, boundary detection, confidence, and instrument-specific scenarios), audio capture manager, and quadrant chart.
 - Tests use `unittest.mock` to mock `pyautogui`, `pygetwindow`, `PaddleOCR`, and `librosa`. No real windows or OCR needed.
 
 ## Code Style
@@ -142,16 +142,17 @@ Default screenshot region ratio: `(0.10, 0.30, 0.98, 0.88)` — left 10%, top 30
 
 ### Action Flow
 
-`ActionExecutor.classify_track()` performs: click three-dots button → wait → click "Add to Playlist" → wait → click target playlist name. Each step locates targets via fresh screenshot + template matching, with configurable delays between steps.
+`ActionExecutor.classify_track()` performs: click three-dots button → wait → **stable-click** "Add to Playlist" (verifies screen has stopped animating by comparing two consecutive screenshots before clicking) → wait → click target playlist name. Each step locates targets via fresh screenshot + template matching, with configurable delays between steps. The stable-click verification only applies to the "Add to Playlist" step.
 
 ### Audio Mood Analysis
 
 1. `AudioCaptureManager.start()` — finds Apple Music PID, creates NamedPipe, streams audio via `process-audio-capture`
 2. `AudioAnalyzer._analysis_loop()` — every 3s captures latest N seconds of stereo audio → converts to mono
-3. `_extract_features()` — computes RMS, tempo, spectral centroid, bandwidth, ZCR, harmonic ratio, normalizes each to [0,1]
-4. `_map_to_quadrant()` — arousal = `RMS×0.4 + tempo×0.3 + bandwidth×0.3`; valence = `centroid×0.35 - ZCR×0.45 + harmonic×0.2`
-5. Stabilization: need 4 consistent quadrant readings before locking (confidence ≥ 60%)
-6. Boundary detection: if 5 consecutive coordinates deviate > 0.8 (locked: 1.2) from rolling mean → reset analysis (new song detected)
+3. `_extract_features()` — computes RMS, tempo, spectral centroid, bandwidth, ZCR, harmonic ratio, spectral contrast, spectral flatness, onset strength (log-compressed to dampen transient-heavy instruments like piano), spectral rolloff, MFCC (13 coefficients); normalizes each to [0,1]
+4. `_apply_temporal_smoothing()` — EMA filter (α=0.35) over a 5-frame buffer to reduce inter-frame feature jitter
+5. `_map_to_quadrant()` — arousal = `tempo×0.35 + RMS×0.25 + bandwidth×0.10 + onset×0.15 + rolloff×0.15`; valence = `contrast×0.30 + centroid×0.15 + harmonic×0.20 + rolloff×0.15 - RMS×0.10 - ZCR×0.05 - flatness×0.05`; tempo is the dominant arousal driver to prevent piano/strings bandwidth from causing false high-energy readings
+6. Stabilization: need 4 consistent quadrant readings before locking (confidence ≥ 60%); confidence = consistency×0.6 + boundary_margin×0.4 (distance from axes)
+7. Boundary detection: if 5 consecutive coordinates deviate > 0.8 (locked: 1.2) from rolling mean → reset analysis with 2-frame cooldown (new song detected)
 
 ## Common Pitfalls
 

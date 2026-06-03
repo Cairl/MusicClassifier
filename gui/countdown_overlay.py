@@ -19,6 +19,7 @@ class CountdownOverlay(QDialog):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
+        self.setCursor(Qt.CrossCursor)
         self.setFocusPolicy(Qt.StrongFocus)
 
         screen = self.screen() if hasattr(self, 'screen') else None
