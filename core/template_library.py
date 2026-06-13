@@ -29,6 +29,8 @@ class TemplateLibrary:
             try:
                 return json.loads(self._coords_path.read_text(encoding='utf-8'))
             except Exception:
+                import sys
+                print(f"[TEMPLATE] 警告: coords.json 解析失败，坐标缓存将被清空", file=sys.stderr, flush=True)
                 return {}
         return {}
 

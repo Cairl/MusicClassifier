@@ -1,5 +1,6 @@
 """Sidebar component — play and library buttons using SVG icons."""
 
+import functools
 import os
 
 from PySide6.QtCore import Qt, Signal
@@ -13,6 +14,7 @@ from gui.theme import COLOR_SECONDARY, COLOR_SEPARATOR, SIDEBAR_WIDTH
 _ASSETS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icons")
 
 
+@functools.lru_cache(maxsize=8)
 def _svg_icon(path: str, color: str = COLOR_SECONDARY, size: int = 22) -> QIcon:
     """Load SVG file and render as QIcon with specified fill color."""
     with open(path, 'r', encoding='utf-8') as f:

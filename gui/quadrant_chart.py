@@ -127,7 +127,7 @@ class QuadrantChart(QWidget):
         self._boundary_flash = True
         self.update()
 
-    def _dot_pixel_pos(self, arousal: float = None, valence: float = None) -> tuple[float, float]:
+    def _dot_pixel_pos(self, arousal: float | None = None, valence: float | None = None) -> tuple[float, float]:
         a = arousal if arousal is not None else self._arousal
         v = valence if valence is not None else self._valence
         ox, oy, side, _ = self._chart_rect()

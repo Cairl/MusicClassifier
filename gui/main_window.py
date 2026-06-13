@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QFrame,
 )
-from PySide6.QtCore import Signal, QObject, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtCore import Signal, QObject, Qt, QTimer, QRect, QPoint
+from PySide6.QtGui import QGuiApplication, QIcon, QPainter, QColor, QPen, QFont
 
 from core.models import TrackInfo, ClassificationResult
 from core.screen_capture import ScreenCapture
@@ -34,6 +34,47 @@ class Signals(QObject):
     classification_done = Signal(object)
     error_occurred = Signal(str)
     window_activated = Signal()
+
+
+class _OcrHighlightOverlay(QWidget):
+    _COLORS = {
+        "song": "#1a73e8",
+        "artist": "#34a853",
+        "album": "#f9ab00",
+    }
+    _DISPLAY_MS = 1500
+
+    def __init__(self, rects: list[tuple[int, int, int, int, str]],
+                 screen_geo: QRect, parent=None):
+        super().__init__(parent)
+        self._rects = rects
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Window
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setGeometry(screen_geo)
+        QTimer.singleShot(self._DISPLAY_MS, self.close)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        for x, y, w, h, label in self._rects:
+            color = QColor(self._COLORS.get(label, "#1a73e8"))
+            painter.setPen(QPen(color, 3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(x, y, w, h)
+            if label:
+                painter.setPen(color)
+                font = QFont()
+                font.setPixelSize(11)
+                font.setWeight(QFont.Weight.Bold)
+                painter.setFont(font)
+                painter.drawText(x, y - 4, label)
+        painter.end()
 
 
 class MainWindow(QMainWindow):
@@ -61,7 +102,7 @@ class MainWindow(QMainWindow):
         self._running = False
         self._mood_active = False
         self._mood_unsupported = not ProcessAudioCapture.is_supported()
-        self._ocr_overlays: list = []
+        self._ocr_overlay_widget: _OcrHighlightOverlay | None = None
 
         self.setWindowIcon(QIcon())
 
@@ -196,6 +237,9 @@ class MainWindow(QMainWindow):
         if self._audio_capture.start():
             self._audio_analyzer.start()
             self._mood_active = True
+        else:
+            print("[AUDIO] 音频捕获启动失败", file=sys.stderr, flush=True)
+            self._signals.error_occurred.emit("音频捕获启动失败，请检查 Apple Music 是否正在播放")
 
     def _on_window_activated(self):
         if not self._running:
@@ -206,13 +250,11 @@ class MainWindow(QMainWindow):
         if image is None:
             self._signals.error_occurred.emit("截图失败，请确认 Apple Music 窗口可见")
             return
-        offset = (self._screen_capture._window_rect[:2]
-                  if self._screen_capture._window_rect else (0, 0))
+        win_rect = self._screen_capture.get_window_rect()
+        offset = (win_rect[:2] if win_rect else (0, 0))
         # Get window size for list-region coordinate conversion
-        win_w = self._screen_capture._window_rect[2] - self._screen_capture._window_rect[0] \
-            if self._screen_capture._window_rect else 0
-        win_h = self._screen_capture._window_rect[3] - self._screen_capture._window_rect[1] \
-            if self._screen_capture._window_rect else 0
+        win_w = win_rect[2] - win_rect[0] if win_rect else 0
+        win_h = win_rect[3] - win_rect[1] if win_rect else 0
 
         # Use position templates if available for precise OCR
         # Coordinates are window-relative; need to convert to list-region-relative
@@ -268,21 +310,15 @@ class MainWindow(QMainWindow):
         self._playlist_grid.disable_missing_playlists(missing_playlists)
 
     def _show_ocr_highlights(self, track: TrackInfo) -> None:
-        for overlay in self._ocr_overlays:
-            if overlay.isVisible():
-                overlay.close()
-        self._ocr_overlays.clear()
+        if self._ocr_overlay_widget is not None:
+            self._ocr_overlay_widget.close()
+            self._ocr_overlay_widget = None
 
         if not track.ocr_boxes:
-            return
-        try:
-            from gui.highlight_overlay import HighlightOverlay
-        except Exception:
+            print(f"[OCR] no ocr_boxes on track", file=sys.stderr, flush=True)
             return
 
-        screen = QGuiApplication.primaryScreen()
-        dpr = screen.devicePixelRatio() if screen else 1.0
-        win_rect = self._screen_capture._window_rect
+        win_rect = self._screen_capture.get_window_rect()
         if not win_rect:
             return
 
@@ -292,19 +328,24 @@ class MainWindow(QMainWindow):
         list_left_phys = win_rect[0] + int(win_w * rl)
         list_top_phys = win_rect[1] + int(win_h * rt)
 
+        screen = QGuiApplication.screenAt(QPoint(win_rect[0], win_rect[1]))
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        dpr = screen.devicePixelRatio() if screen else 1.0
+
+        rects: list[tuple[int, int, int, int, str]] = []
         for sx, sy, sw, sh, label in track.ocr_boxes:
-            screen_x = int((list_left_phys + sx) / dpr)
-            screen_y = int((list_top_phys + sy) / dpr)
-            screen_w = max(int(sw / dpr), 20)
-            screen_h = max(int(sh / dpr), 12)
-            overlay = HighlightOverlay(
-                screen_x + screen_w // 2,
-                screen_y + screen_h // 2,
-                screen_w, screen_h,
-                label, 1200,
-            )
-            overlay.show()
-            self._ocr_overlays.append(overlay)
+            lx = int((list_left_phys + sx) / dpr)
+            ly = int((list_top_phys + sy) / dpr)
+            lw = max(int(sw / dpr), 16)
+            lh = max(int(sh / dpr), 10)
+            rects.append((lx, ly, lw, lh, label))
+            print(f"[OCR] box: {label} screen=({lx},{ly},{lw},{lh}) dpr={dpr:.2f}",
+                  file=sys.stderr, flush=True)
+
+        geo = screen.geometry() if screen else QRect(0, 0, 1920, 1080)
+        self._ocr_overlay_widget = _OcrHighlightOverlay(rects, geo, self)
+        self._ocr_overlay_widget.show()
 
     def _on_classify(self, playlist_name: str, volume_name: str):
         import sys
@@ -320,15 +361,15 @@ class MainWindow(QMainWindow):
             # No OCR data — use cached position for the dots button
             region = self._template_lib.get_cached_region("position/more_button")
             if region:
-                offset = (self._screen_capture._window_rect[:2]
-                          if self._screen_capture._window_rect else (0, 0))
+                wr = self._screen_capture.get_window_rect()
+                offset = (wr[:2] if wr else (0, 0))
                 cx = region["x"] + region["w"] // 2 + offset[0]
                 cy = region["y"] + region["h"] // 2 + offset[1]
                 dots_pos = (cx, cy)
             else:
-                from core.models import TrackInfo
-                dots_pos = (0, 0)
-                self._current_track = TrackInfo("未知歌曲", "", "", 0, (0, 0))
+                print("[MAIN] 无法确定三点按钮位置", file=sys.stderr, flush=True)
+                self._signals.error_occurred.emit("无法确定三点按钮位置，请先执行 OCR 检测")
+                return
 
         track = self._current_track
         self._playlist_grid.set_buttons_active(False)
@@ -337,7 +378,7 @@ class MainWindow(QMainWindow):
             try:
                 result = self._action_executor.classify_track(
                     dots_pos, playlist_name, volume_name,
-                    track.song_name,
+                    track.song_name if track else "未知歌曲",
                 )
                 self._signals.classification_done.emit(result)
             except Exception as e:

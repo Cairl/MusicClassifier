@@ -120,7 +120,8 @@ class AudioCaptureManager:
         collected = []
         available = 0
 
-        for sample in reversed(self._buffer):
+        buffer_snapshot = list(self._buffer)
+        for sample in reversed(buffer_snapshot):
             collected.append(sample.data)
             available += sample.data.shape[1]
             if available >= target_samples:
@@ -173,9 +174,13 @@ class AudioCaptureManager:
 
     def _store_pcm(self, raw: bytes) -> None:
         float_data = np.frombuffer(raw, dtype=np.float32)
-        if float_data.shape[0] < 2:
+        total_floats = float_data.shape[0]
+        if total_floats < 2:
             return
-        num_samples = float_data.shape[0] // 2
+        if total_floats % 2 != 0:
+            float_data = float_data[:total_floats - 1]
+            total_floats = float_data.shape[0]
+        num_samples = total_floats // 2
         stereo = float_data[:num_samples * 2].reshape(2, num_samples)
 
         sample = AudioSample(
@@ -203,6 +208,16 @@ class AudioCaptureManager:
         while pos + 8 <= len(data):
             chunk_id = data[pos:pos + 4]
             chunk_size = int.from_bytes(data[pos + 4:pos + 8], 'little')
+
+            if chunk_id == b'fmt ':
+                if chunk_size < 16:
+                    return None
+                audio_format = int.from_bytes(data[pos+8:pos+10], 'little')
+                num_channels = int.from_bytes(data[pos+10:pos+12], 'little')
+                bits_per_sample = int.from_bytes(data[pos+22:pos+24], 'little')
+                if audio_format != 3 or num_channels != 2 or bits_per_sample != 32:
+                    # Only IEEE float stereo 32-bit is supported
+                    return None
 
             if chunk_id == b'data':
                 return pos + 8

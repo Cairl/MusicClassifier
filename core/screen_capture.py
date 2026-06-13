@@ -68,6 +68,10 @@ class ScreenCapture:
         screenshot = pyautogui.screenshot(region=(left, top, right - left, bottom - top))
         return np.array(screenshot)
 
+    def get_window_rect(self) -> tuple | None:
+        """Return current window rect (left, top, right, bottom) or None."""
+        return self._window_rect
+
     def capture_full_screen(self, delay_ms: int = 3000) -> np.ndarray | None:
         time.sleep(delay_ms / 1000)
         screenshot = pyautogui.screenshot()

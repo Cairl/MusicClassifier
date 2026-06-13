@@ -8,13 +8,15 @@ class TrackInfo:
     album: str
     row_y: int
     dots_btn_pos: tuple[int, int]
-    ocr_boxes: list[tuple[int, int, int, int, str]] = None
+    ocr_boxes: list[tuple[int, int, int, int, str]] | None = None
 
     def __post_init__(self):
         if self.ocr_boxes is None:
             self.ocr_boxes = []
 
     def display_text(self) -> str:
+        if not self.song_name:
+            return self.artist or "未知歌曲"
         if self.artist:
             return f"{self.song_name} — {self.artist}"
         return self.song_name

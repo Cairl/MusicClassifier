@@ -97,10 +97,17 @@ class TestRingBuffer:
 class TestWavHeaderParsing:
     def test_parse_wav_header_locates_data_offset(self):
         manager = AudioCaptureManager()
-        fmt_chunk = b'\x00' * 40
+        # Build a valid IEEE float stereo 32-bit fmt chunk (40 bytes)
+        fmt_chunk = bytearray(40)
+        # audio_format = 3 (IEEE float) at offset 0
+        fmt_chunk[0:2] = (3).to_bytes(2, 'little')
+        # num_channels = 2 at offset 2
+        fmt_chunk[2:4] = (2).to_bytes(2, 'little')
+        # bits_per_sample = 32 at offset 14
+        fmt_chunk[14:16] = (32).to_bytes(2, 'little')
         header = (
             b'RIFF' + (68).to_bytes(4, 'little') + b'WAVE'
-            + b'fmt ' + (40).to_bytes(4, 'little') + fmt_chunk
+            + b'fmt ' + (40).to_bytes(4, 'little') + bytes(fmt_chunk)
             + b'data' + (0).to_bytes(4, 'little')
         )
         offset = manager._parse_wav_header(header)

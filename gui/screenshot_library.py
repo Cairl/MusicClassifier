@@ -328,7 +328,7 @@ class ScreenshotLibrary(QDialog):
             return
 
         # Save region position
-        window_rect = self._screen_capture._window_rect
+        window_rect = self._screen_capture.get_window_rect()
         if window_rect is None:
             window_rect = self._screen_capture.find_window()
         offset = (window_rect[0], window_rect[1]) if window_rect else (0, 0)

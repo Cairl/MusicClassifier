@@ -29,7 +29,7 @@ class ActionExecutor:
             dlg = HighlightOverlay(x, y, 36, 36, label, 300)
             dlg.exec()
         except Exception:
-            pass
+            traceback.print_exc(file=sys.stderr)
 
     # ── Two click modes ────────────────────────────────────────
 
@@ -44,8 +44,8 @@ class ActionExecutor:
             screen = self._screen_capture.capture_full_window(delay_ms=0)
             if screen is None:
                 return False
-            offset = self._screen_capture._window_rect[:2] \
-                if self._screen_capture._window_rect else (0, 0)
+            wr = self._screen_capture.get_window_rect()
+            offset = wr[:2] if wr else (0, 0)
         if screen is None:
             return False
         match = self._template_lib.find_template(screen, template_name)
@@ -73,8 +73,8 @@ class ActionExecutor:
                 if screen is None:
                     time.sleep(0.1)
                     continue
-                offset = self._screen_capture._window_rect[:2] \
-                    if self._screen_capture._window_rect else (0, 0)
+                wr = self._screen_capture.get_window_rect()
+                offset = wr[:2] if wr else (0, 0)
             if screen is None:
                 time.sleep(0.1)
                 continue
@@ -96,8 +96,8 @@ class ActionExecutor:
     def click_dots_button(self, dots_pos: tuple[int, int] | None = None) -> bool:
         _log(f"click_dots_button() called, dots_pos={dots_pos}")
         try:
-            offset = self._screen_capture._window_rect[:2] \
-                if self._screen_capture._window_rect else (0, 0)
+            wr = self._screen_capture.get_window_rect()
+            offset = wr[:2] if wr else (0, 0)
             region = self._template_lib.get_cached_region("position/more_button")
             if region is not None:
                 cx = region["x"] + region["w"] // 2 + offset[0]
@@ -164,106 +164,107 @@ class ActionExecutor:
         saved_mouse = pyautogui.position()
         _log(f"  original mouse at ({saved_mouse.x}, {saved_mouse.y})")
 
-        # Step 1: Click ⋯
-        _log("[Step 1/5] Click ⋯ button")
-        if not self.click_dots_button(dots_pos):
-            return ClassificationResult(
-                success=False, track_name=track_name,
-                target_playlist=playlist_name,
-                message="三点按钮点击失败",
-            )
-        _log("  ✓ ⋯ clicked")
-
-        # Step 2: Wait for screen to stabilize, then click "添加到播放列表"
-        _log("[Step 2/5] Stable-click '添加到播放列表'")
-        if not self._template_lib.has_template("ui/add_to_playlist"):
-            _log("  ✗ template ui/add_to_playlist.png missing")
-            return ClassificationResult(
-                success=False, track_name=track_name,
-                target_playlist=playlist_name,
-                message="模板 templates/ui/add_to_playlist.png 不存在，请先采集",
-            )
-        if not self._stable_click("ui/add_to_playlist"):
-            _log("  ✗ '添加到播放列表' not found or screen unstable")
-            return ClassificationResult(
-                success=False, track_name=track_name,
-                target_playlist=playlist_name,
-                message="未找到「添加到播放列表」按钮或画面未稳定",
-            )
-        _log("  ✓ '添加到播放列表' clicked")
-
-        # Step 3: Try direct playlist (fixed 500ms)
-        _log(f"[Step 3/5] Try direct playlist '{playlist_name}'")
-        playlist_found = False
-        has_playlist_template = self._template_lib.has_template(f"playlists/{playlist_name}")
-        _log(f"  has template = {has_playlist_template}")
-        if has_playlist_template:
-            if self._quick_click(f"playlists/{playlist_name}", use_full_screen=True):
-                playlist_found = True
-                _log(f"  ✓ playlist '{playlist_name}' found directly")
-
-        # Step 4: If not found, click volume then playlist (both fixed 500ms)
-        if not playlist_found:
-            _log(f"[Step 4/5] Click volume '{volume_name}', then playlist")
-            if not self._template_lib.has_template(f"volumes/{volume_name}"):
-                _log(f"  ✗ template volumes/{volume_name}.png missing")
-                return ClassificationResult(
-                    success=False, track_name=track_name,
-                    target_playlist=playlist_name,
-                    message=f"模板 templates/volumes/{volume_name}.png 不存在，请先采集",
-                )
-            if not self._quick_click(f"volumes/{volume_name}", use_full_screen=True):
-                _log(f"  ✗ volume '{volume_name}' not found")
-                return ClassificationResult(
-                    success=False, track_name=track_name,
-                    target_playlist=playlist_name,
-                    message=f"未找到卷「{volume_name}」",
-                )
-            _log(f"  ✓ volume clicked, now finding playlist")
-            if not self._template_lib.has_template(f"playlists/{playlist_name}"):
-                _log(f"  ✗ template playlists/{playlist_name}.png missing")
-                return ClassificationResult(
-                    success=False, track_name=track_name,
-                    target_playlist=playlist_name,
-                    message=f"模板 templates/playlists/{playlist_name}.png 不存在，请先采集",
-                )
-            if not self._quick_click(f"playlists/{playlist_name}", use_full_screen=True):
-                _log(f"  ✗ playlist '{playlist_name}' not found")
-                return ClassificationResult(
-                    success=False, track_name=track_name,
-                    target_playlist=playlist_name,
-                    message=f"未找到歌单「{playlist_name}」",
-                )
-            _log(f"  ✓ playlist clicked via volume")
-
-        # Step 5: Cleanup — toggle menu off
-        _log("[Step 5/5] Click ⋯ + Delete (cleanup)")
-        if not self.click_dots_button(dots_pos):
-            _log("  ✗ second ⋯ click failed (cleanup)")
-            return ClassificationResult(
-                success=False, track_name=track_name,
-                target_playlist=playlist_name,
-                message="三点按钮点击失败（删除前）",
-            )
         try:
-            pyautogui.press("delete")
-            time.sleep(0.3)
-            _log("  ✓ delete pressed")
-        except Exception:
-            traceback.print_exc()
+            # Step 1: Click ⋯
+            _log("[Step 1/5] Click ⋯ button")
+            if not self.click_dots_button(dots_pos):
+                return ClassificationResult(
+                    success=False, track_name=track_name,
+                    target_playlist=playlist_name,
+                    message="三点按钮点击失败",
+                )
+            _log("  ✓ ⋯ clicked")
+
+            # Step 2: Wait for screen to stabilize, then click "添加到播放列表"
+            _log("[Step 2/5] Stable-click '添加到播放列表'")
+            if not self._template_lib.has_template("ui/add_to_playlist"):
+                _log("  ✗ template ui/add_to_playlist.png missing")
+                return ClassificationResult(
+                    success=False, track_name=track_name,
+                    target_playlist=playlist_name,
+                    message="模板 templates/ui/add_to_playlist.png 不存在，请先采集",
+                )
+            if not self._stable_click("ui/add_to_playlist"):
+                _log("  ✗ '添加到播放列表' not found or screen unstable")
+                return ClassificationResult(
+                    success=False, track_name=track_name,
+                    target_playlist=playlist_name,
+                    message="未找到「添加到播放列表」按钮或画面未稳定",
+                )
+            _log("  ✓ '添加到播放列表' clicked")
+
+            # Step 3: Try direct playlist (fixed 500ms)
+            _log(f"[Step 3/5] Try direct playlist '{playlist_name}'")
+            playlist_found = False
+            has_playlist_template = self._template_lib.has_template(f"playlists/{playlist_name}")
+            _log(f"  has template = {has_playlist_template}")
+            if has_playlist_template:
+                if self._quick_click(f"playlists/{playlist_name}", use_full_screen=True):
+                    playlist_found = True
+                    _log(f"  ✓ playlist '{playlist_name}' found directly")
+
+            # Step 4: If not found, click volume then playlist (both fixed 500ms)
+            if not playlist_found:
+                _log(f"[Step 4/5] Click volume '{volume_name}', then playlist")
+                if not self._template_lib.has_template(f"volumes/{volume_name}"):
+                    _log(f"  ✗ template volumes/{volume_name}.png missing")
+                    return ClassificationResult(
+                        success=False, track_name=track_name,
+                        target_playlist=playlist_name,
+                        message=f"模板 templates/volumes/{volume_name}.png 不存在，请先采集",
+                    )
+                if not self._quick_click(f"volumes/{volume_name}", use_full_screen=True):
+                    _log(f"  ✗ volume '{volume_name}' not found")
+                    return ClassificationResult(
+                        success=False, track_name=track_name,
+                        target_playlist=playlist_name,
+                        message=f"未找到卷「{volume_name}」",
+                    )
+                _log(f"  ✓ volume clicked, now finding playlist")
+                if not self._template_lib.has_template(f"playlists/{playlist_name}"):
+                    _log(f"  ✗ template playlists/{playlist_name}.png missing")
+                    return ClassificationResult(
+                        success=False, track_name=track_name,
+                        target_playlist=playlist_name,
+                        message=f"模板 templates/playlists/{playlist_name}.png 不存在，请先采集",
+                    )
+                if not self._quick_click(f"playlists/{playlist_name}", use_full_screen=True):
+                    _log(f"  ✗ playlist '{playlist_name}' not found")
+                    return ClassificationResult(
+                        success=False, track_name=track_name,
+                        target_playlist=playlist_name,
+                        message=f"未找到歌单「{playlist_name}」",
+                    )
+                _log(f"  ✓ playlist clicked via volume")
+
+            # Step 5: Cleanup — toggle menu off
+            _log("[Step 5/5] Click ⋯ + Delete (cleanup)")
+            if not self.click_dots_button(dots_pos):
+                _log("  ✗ second ⋯ click failed (cleanup)")
+                return ClassificationResult(
+                    success=False, track_name=track_name,
+                    target_playlist=playlist_name,
+                    message="三点按钮点击失败（删除前）",
+                )
+            try:
+                pyautogui.press("delete")
+                time.sleep(0.3)
+                _log("  ✓ delete pressed")
+            except Exception:
+                traceback.print_exc()
+                return ClassificationResult(
+                    success=False, track_name=track_name,
+                    target_playlist=playlist_name,
+                    message="删除操作失败",
+                )
+
+            _log(f"=== classify_track SUCCESS ===")
             return ClassificationResult(
-                success=False, track_name=track_name,
+                success=True, track_name=track_name,
                 target_playlist=playlist_name,
-                message="删除操作失败",
+                message=f"已添加到歌单: {playlist_name}",
             )
-
-        # Restore mouse to original position
-        pyautogui.moveTo(saved_mouse.x, saved_mouse.y)
-        _log(f"  mouse restored to ({saved_mouse.x}, {saved_mouse.y})")
-
-        _log(f"=== classify_track SUCCESS ===")
-        return ClassificationResult(
-            success=True, track_name=track_name,
-            target_playlist=playlist_name,
-            message=f"已添加到歌单: {playlist_name}",
-        )
+        finally:
+            # Restore mouse to original position
+            pyautogui.moveTo(saved_mouse.x, saved_mouse.y)
+            _log(f"  mouse restored to ({saved_mouse.x}, {saved_mouse.y})")
