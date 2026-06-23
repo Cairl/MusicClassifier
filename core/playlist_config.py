@@ -90,3 +90,15 @@ class PlaylistConfig:
     @property
     def templates_dir(self) -> str:
         return self._data.get("template_matching", {}).get("templates_dir", "templates")
+
+    @property
+    def music2emo_config(self) -> dict:
+        cfg = self._data.get("music2emo", {})
+        root = self._config_path.parent
+        python = cfg.get("venv_python", "")
+        script = cfg.get("server_script", "")
+        return {
+            "enabled": cfg.get("enabled", False),
+            "venv_python": str(root / python) if python else "",
+            "server_script": str(root / script) if script else "",
+        }

@@ -326,3 +326,98 @@ class TestBoundaryDetection:
         analyzer._recent_coords = [(0.3, 0.3)]
         result = analyzer._detect_boundary((-0.8, -0.8))
         assert result is False
+
+
+class TestMusic2EmoPath:
+    def _analyzer_with_client(self, predict_return=None, side_effect=None):
+        client = MagicMock()
+        client.available = True
+        if side_effect is not None:
+            client.predict_audio.side_effect = side_effect
+        else:
+            client.predict_audio.return_value = predict_return
+        analyzer = AudioAnalyzer(MagicMock(), music2emo_client=client)
+        analyzer._signals = MagicMock()
+        return analyzer, client
+
+    def _audio(self):
+        return np.zeros(48000, dtype=np.float32)
+
+    def test_vigorous_mapping(self):
+        analyzer, _ = self._analyzer_with_client({"valence": 9.0, "arousal": 9.0, "moods": []})
+        result = analyzer._analyze_chunk(self._audio(), 48000)
+        assert result.quadrant == "VIGOROUS"
+        assert result.arousal > 0.9
+        assert result.valence > 0.9
+
+    def test_melancholy_mapping(self):
+        analyzer, _ = self._analyzer_with_client({"valence": 1.0, "arousal": 1.0, "moods": []})
+        result = analyzer._analyze_chunk(self._audio(), 48000)
+        assert result.quadrant == "MELANCHOLY"
+        assert result.arousal < -0.9
+        assert result.valence < -0.9
+
+    def test_tense_mapping(self):
+        analyzer, _ = self._analyzer_with_client({"valence": 1.0, "arousal": 9.0, "moods": []})
+        result = analyzer._analyze_chunk(self._audio(), 48000)
+        assert result.quadrant == "TENSE"
+
+    def test_calm_mapping(self):
+        analyzer, _ = self._analyzer_with_client({"valence": 9.0, "arousal": 1.0, "moods": []})
+        result = analyzer._analyze_chunk(self._audio(), 48000)
+        assert result.quadrant == "CALM"
+
+    def test_midpoint_is_near_zero(self):
+        analyzer, _ = self._analyzer_with_client({"valence": 5.0, "arousal": 5.0, "moods": []})
+        result = analyzer._analyze_chunk(self._audio(), 48000)
+        assert abs(result.arousal) < 0.05
+        assert abs(result.valence) < 0.05
+
+    def test_smooth_va_dampens_change(self):
+        analyzer, _ = self._analyzer_with_client({"valence": 9.0, "arousal": 9.0, "moods": []})
+        analyzer._analyze_chunk(self._audio(), 48000)
+        analyzer._m2e_client.predict_audio.return_value = {"valence": 1.0, "arousal": 1.0, "moods": []}
+        result = analyzer._analyze_chunk(self._audio(), 48000)
+        assert -1.0 < result.arousal < 1.0
+        assert result.arousal > -1.0
+        assert result.valence > -1.0
+
+    @patch("core.audio_analyzer.librosa")
+    def test_predict_error_falls_back_to_librosa(self, mock_librosa):
+        self._stub_librosa(mock_librosa)
+        analyzer, _ = self._analyzer_with_client({"error": "boom"})
+        result = analyzer._analyze_chunk(np.ones(48000, dtype=np.float32) * 0.1, 48000)
+        assert result.quadrant in ("VIGOROUS", "TENSE", "MELANCHOLY", "CALM")
+        assert -1.0 <= result.arousal <= 1.0
+
+    @patch("core.audio_analyzer.librosa")
+    def test_predict_exception_falls_back_to_librosa(self, mock_librosa):
+        self._stub_librosa(mock_librosa)
+        analyzer, _ = self._analyzer_with_client(side_effect=RuntimeError("server dead"))
+        result = analyzer._analyze_chunk(np.ones(48000, dtype=np.float32) * 0.1, 48000)
+        assert result.quadrant in ("VIGOROUS", "TENSE", "MELANCHOLY", "CALM")
+
+    def test_no_client_skips_music2emo(self):
+        analyzer = AudioAnalyzer(MagicMock())
+        assert analyzer._m2e_client is None
+
+    def test_reset_clears_va_smoothing(self):
+        analyzer, _ = self._analyzer_with_client({"valence": 9.0, "arousal": 9.0, "moods": []})
+        analyzer._analyze_chunk(self._audio(), 48000)
+        assert analyzer._last_va is not None
+        analyzer._reset_state()
+        assert analyzer._last_va is None
+
+    @staticmethod
+    def _stub_librosa(mock_librosa):
+        mock_librosa.feature.rms.return_value = np.array([[0.5]])
+        mock_librosa.feature.spectral_centroid.return_value = np.array([[2000.0]])
+        mock_librosa.feature.zero_crossing_rate.return_value = np.array([[0.1]])
+        mock_librosa.feature.spectral_bandwidth.return_value = np.array([[3000.0]])
+        mock_librosa.beat.beat_track.return_value = (np.array([120.0]), np.array([0]))
+        mock_librosa.effects.harmonic.return_value = np.zeros(48000)
+        mock_librosa.feature.spectral_contrast.return_value = np.array([[20.0]])
+        mock_librosa.feature.spectral_flatness.return_value = np.array([[0.05]])
+        mock_librosa.onset.onset_strength.return_value = np.array([0.8])
+        mock_librosa.feature.spectral_rolloff.return_value = np.array([[4000.0]])
+        mock_librosa.feature.mfcc.return_value = np.zeros((13, 10))

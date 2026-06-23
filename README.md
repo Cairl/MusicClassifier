@@ -1,10 +1,10 @@
 # MusicClassifier
 
-> Apple Music 歌曲自动分类工具，结合 PaddleOCR 文字识别与 librosa 音频情感分析，根据旋律情绪将歌曲归入四卷十六境播放列表。
+> Apple Music 歌曲自动分类工具，结合 PaddleOCR 文字识别与 music2emo（MERT 预训练模型）音频情感分析，根据旋律情绪将歌曲归入四卷十六境播放列表。
 
 ## 功能特性
 
-- **实时音频情感分析**：通过系统音频捕获提取 librosa 音频特征（RMS、频谱质心、过零率、速度、谐波比等 12 维特征），映射到 Arousal-Valence 二维情感象限
+- **实时音频情感分析**：通过系统音频捕获，用 music2emo（基于 MERT 的预训练模型）预测 Arousal-Valence，映射到二维情感象限；引擎不可用时自动降级到 librosa 特征提取
 - **四象限情绪模型**：
   - **VIGOROUS**（激昂）：高唤醒 + 高愉悦
   - **TENSE**（紧张）：高唤醒 + 低愉悦
@@ -31,7 +31,8 @@
 - **Python 3.12**
 - **PySide6**：GUI 框架
 - **PaddleOCR + PaddlePaddle**：中文 OCR 文字识别
-- **librosa**：音频特征提取与情感分析
+- **librosa**：音频特征提取（music2emo 不可用时的降级路径）
+- **music2emo**（可选）：基于 MERT 的预训练音乐情绪模型，独立子进程运行，提升 valence/arousal 准确度
 - **OpenCV (opencv-python)**：模板匹配
 - **Pillow**：图像处理
 - **pyautogui + pygetwindow**：GUI 自动化
@@ -57,6 +58,16 @@ Pillow>=10.0
 process-audio-capture>=1.0.0
 librosa>=0.10
 ```
+
+### 可选：启用 music2emo 情绪引擎
+
+默认使用 librosa 特征路径。启用 music2emo（基于 MERT 的预训练模型，valence/arousal 更准确，但需额外约 1GB 依赖）：
+
+```bash
+music2emo_engine\install.bat
+```
+
+该脚本创建独立 venv（Python 3.12）、安装 torch CPU + music2emo 依赖、克隆 music2emo 仓库。首次分析时自动下载 MERT 模型（~400MB，国内可设 `HF_ENDPOINT=https://hf-mirror.com`）。`config.json` 中 `music2emo.enabled` 控制开关，venv 不存在时自动降级到 librosa。
 
 ## 使用
 
@@ -87,7 +98,7 @@ python main.pyw
 ### 3. 开始分类
 
 1. 在 Apple Music 中打开待分类的歌曲列表
-2. 点击「▶ 开始」按钮，程序开始：
+2. 点击「开始」按钮，程序开始：
    - **环境音频捕获**（Warmup 5 秒起步，逐步扩展到 15 秒快照窗口）
    - **弹窗截图识别**当前播放歌曲（PaddleOCR 识别歌名 + 歌手）
    - **实时情绪分析**（每 3 秒采样，EMA 平滑特征，连续 7 次确认后锁定象限）
@@ -104,7 +115,7 @@ python main.pyw
 
 | 按钮        | 功能                    |
 |-------------|------------------------|
-| ▶ / ■      | 开始/停止分类流程        |
+| 开始/停止   | 开始/停止分类流程        |
 | 截图库       | 打开模板管理界面         |
 | 各播放列表按钮 | 手动分类到指定播放列表    |
 
@@ -184,7 +195,7 @@ MusicClassifier/
 
 | 参数                          | 默认值    | 说明                     |
 |-------------------------------|-----------|--------------------------|
-| `ANALYSIS_INTERVAL`           | 3.0 秒    | 分析间隔                  |
+| `ANALYSIS_INTERVAL`           | 6.0 秒    | 分析间隔                  |
 | `SNAPSHOT_SECONDS`            | 15.0 秒   | 音频快照窗口最大长度        |
 | `WARMUP_START`                | 5.0 秒    | 初始预热窗口               |
 | `HISTORY_SIZE`                | 7         | 历史象限记录数              |

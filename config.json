@@ -46,5 +46,10 @@
   "template_matching": {
     "threshold": 0.8,
     "templates_dir": "templates"
+  },
+  "music2emo": {
+    "enabled": true,
+    "venv_python": "music2emo_engine/.venv/Scripts/python.exe",
+    "server_script": "music2emo_engine/server.py"
   }
 }

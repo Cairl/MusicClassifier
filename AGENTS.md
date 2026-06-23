@@ -6,15 +6,16 @@ MusicClassifier is a Windows-based semi-automated Apple Music song classificatio
 
 **Architecture**: Screenshot → OCR recognition → User selection → Simulated mouse clicks. Four core modules are connected through the `TrackInfo` dataclass. All UI automation runs on background threads to keep the PySide6 GUI responsive.
 
-Additionally, the app features a **real-time audio mood analysis** system: it captures process audio from Apple Music via named pipes, extracts features using librosa (RMS, tempo, spectral centroid, bandwidth, ZCR, harmonic ratio), maps them to a valence-arousal quadrant, and recommends the best matching playlist.
+Additionally, the app features a **real-time audio mood analysis** system: it captures process audio from Apple Music via named pipes, predicts valence/arousal via music2emo (MERT-based, isolated subprocess) — falling back to librosa feature extraction when the engine is unavailable — then maps the result to a valence-arousal quadrant and recommends the best matching playlist.
 
-**Tech Stack**: Python 3.12, PySide6, PaddleOCR 2.x, PaddlePaddle 2.x, PyAutoGUI, pygetwindow, OpenCV, librosa, process-audio-capture
+**Tech Stack**: Python 3.12, PySide6, PaddleOCR 2.x, PaddlePaddle 2.x, PyAutoGUI, pygetwindow, OpenCV, librosa, process-audio-capture; optional music2emo engine (torch + MERT, isolated venv)
 
 ## Setup Commands
 
 - Install dependencies: `pip install -r requirements.txt`
 - **Critical**: PaddlePaddle 3.x and PaddleOCR 3.x are incompatible with this project. Version constraints in `requirements.txt` are `paddleocr>=2.7,<3.0` and `paddlepaddle>=2.5,<3.0`. Do not upgrade beyond these ranges.
 - Python path on this machine: `C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe`
+- **Optional: music2emo mood engine** (improves valence/arousal accuracy over the librosa baseline): run `music2emo_engine\install.bat` to create an isolated venv (Python 3.12) with torch + MERT. First launch downloads the MERT model (~400MB, set `HF_ENDPOINT=https://hf-mirror.com` if HuggingFace is blocked). Toggle via `config.json` → `music2emo.enabled`; when off or the venv is absent, `AudioAnalyzer` automatically falls back to the librosa feature path. The engine runs as an isolated subprocess (`music2emo_engine/server.py`) so torch/MERT never pollute the PaddlePaddle host env.
 
 ## Development Workflow
 
@@ -49,9 +50,10 @@ Additionally, the app features a **real-time audio mood analysis** system: it ca
 - No custom `paintEvent` for DPI scaling compatibility
 
 ### Layout
-|- Sidebar (48px): white background + 1px `#e8eaed` separator; play button at top, library and about buttons at bottom
+|- Sidebar (64px): white background + 1px `#e8eaed` separator; play button at top, library and about buttons at bottom
 |- Main area: track info card (song name + album, 12px rounded, no border) → mood status bar → quadrant chart → 5-column playlist grid
-- Window width fixed at 240 (DPI-scaled), height adapts to content
+- Window fixed at 360x520 **logical** pixels; Qt6 handles High DPI scaling automatically — never multiply sizes by `devicePixelRatio` manually (causes double-scaling and blurry buttons). All QSS `px` values are logical pixels.
+- SVG icons rendered via `QPixmap` must call `setDevicePixelRatio(dpr)` (or be created at `size*dpr`) or they blur on high-DPI screens. See `gui/sidebar.py:_svg_icon`.
 - Grid spacing 4px, card padding 10px
 
 ### Button States

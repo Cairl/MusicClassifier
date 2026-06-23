@@ -46,15 +46,16 @@ MOOD_LABELS = {
 }
 
 # ── Typography ─────────────────────────────────────────────────────
-FONT_SIZE_XS = "9px"
-FONT_SIZE_SM = "10px"
-FONT_SIZE_MD = "11px"
-FONT_SIZE_LG = "13px"
+FONT_SIZE_XXS = "7px"
+FONT_SIZE_XS = "10px"
+FONT_SIZE_SM = "11px"
+FONT_SIZE_MD = "12px"
+FONT_SIZE_LG = "14px"
 FONT_SIZE_TITLE = "15px"
 
-FONT_WEIGHT_NORMAL = "400"
-FONT_WEIGHT_MEDIUM = "500"
-FONT_WEIGHT_SEMIBOLD = "600"
+FONT_WEIGHT_NORMAL = "700"
+FONT_WEIGHT_MEDIUM = "700"
+FONT_WEIGHT_SEMIBOLD = "700"
 FONT_WEIGHT_BOLD = "700"
 
 # ── Spacing ────────────────────────────────────────────────────────
@@ -65,20 +66,20 @@ SPACING_MD = 8
 SPACING_LG = 10
 
 # ── Sizing ─────────────────────────────────────────────────────────
-SIDEBAR_WIDTH = 48
-SIDEBAR_BUTTON_SIZE = 32
-SIDEBAR_ICON_SIZE = 20
+SIDEBAR_WIDTH = 64
+SIDEBAR_BUTTON_SIZE = 44
+SIDEBAR_ICON_SIZE = 28
 
-CARD_HEIGHT = 90  # slightly taller for mood badge
+CARD_HEIGHT = 68
 
-PLAYLIST_BTN_MIN_HEIGHT = 28
-PLAYLIST_BTN_PADDING = "6px 4px"
+PLAYLIST_BTN_MIN_HEIGHT = 30
+PLAYLIST_BTN_PADDING = "5px 4px"
 
-# ── Border Radius ──────────────────────────────────────────────────
-RADIUS_SM = "8px"
-RADIUS_MD = "12px"
-RADIUS_CIRCLE = "16px"
-RADIUS_PILL = "14px"
+# ── Border Radius (squircle-approximated, ~0.7x of control height) ──
+RADIUS_SM = "14px"
+RADIUS_MD = "24px"
+RADIUS_CIRCLE = "22px"
+RADIUS_PILL = "15px"
 
 # ── Shadow (QSS drop-shadow) ───────────────────────────────────────
 CARD_SHADOW = "box-shadow: 0 1px 3px rgba(0,0,0,0.08);"
@@ -172,13 +173,13 @@ QWidget#track_card {{
     border-radius: {RADIUS_MD};
 }}
 QLabel#track_name {{
-    font-size: 24px;
+    font-size: {FONT_SIZE_TITLE};
     font-weight: 600;
     color: {COLOR_ON_SURFACE};
     line-height: 1.3;
 }}
 QLabel#track_subtitle {{
-    font-size: 16px;
+    font-size: {FONT_SIZE_SM};
     color: {COLOR_SUBTLE};
     line-height: 1.2;
 }}

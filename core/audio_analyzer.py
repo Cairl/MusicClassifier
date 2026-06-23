@@ -25,7 +25,7 @@ class AnalyzerSignals(QObject):
 
 
 class AudioAnalyzer:
-    ANALYSIS_INTERVAL = 3.0
+    ANALYSIS_INTERVAL = 6.0
     SNAPSHOT_SECONDS = 15.0
     WARMUP_START = 5.0
     WARMUP_STEP = 2.0
@@ -52,8 +52,10 @@ class AudioAnalyzer:
     NORM_ONSET = 1.5
     NORM_ROLLOFF = 8000.0
 
-    def __init__(self, capture_manager: AudioCaptureManager):
+    def __init__(self, capture_manager: AudioCaptureManager,
+                 music2emo_client=None):
         self._capture = capture_manager
+        self._m2e_client = music2emo_client
         self._running = False
         self._thread: threading.Thread | None = None
         self._signals = AnalyzerSignals()
@@ -69,6 +71,7 @@ class AudioAnalyzer:
         self._locked_valence: float = 0.0
         self._feature_buffer: deque[dict] = deque(maxlen=self.FEATURE_BUFFER_SIZE)
         self._smoothed_features: dict = {}
+        self._last_va: tuple[float, float] | None = None
 
     @property
     def signals(self) -> AnalyzerSignals:
@@ -87,6 +90,8 @@ class AudioAnalyzer:
         if self._thread is not None:
             self._thread.join(timeout=3.0)
             self._thread = None
+        if self._m2e_client is not None:
+            self._m2e_client.stop()
 
     def _reset_state(self) -> None:
         self._recent_quadrants.clear()
@@ -98,6 +103,7 @@ class AudioAnalyzer:
         self._locked_quadrant = ""
         self._feature_buffer.clear()
         self._smoothed_features = {}
+        self._last_va = None
 
     def _analysis_loop(self) -> None:
         silence_streak = 0
@@ -197,9 +203,51 @@ class AudioAnalyzer:
         return distance > threshold
 
     def _analyze_chunk(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
+        if self._m2e_client is not None and self._m2e_client.available:
+            return self._analyze_with_music2emo(audio, sr)
+        return self._analyze_with_librosa(audio, sr)
+
+    def _analyze_with_music2emo(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
+        try:
+            out = self._m2e_client.predict_audio(audio, sr)
+        except Exception as exc:
+            self._signals.analysis_error.emit(f"music2emo unavailable: {exc}")
+            return self._analyze_with_librosa(audio, sr)
+        if "error" in out:
+            self._signals.analysis_error.emit(f"music2emo error: {out['error']}")
+            return self._analyze_with_librosa(audio, sr)
+        arousal = (float(out["arousal"]) - 5.0) / 4.0
+        valence = (float(out["valence"]) - 5.0) / 4.0
+        arousal, valence = self._smooth_va(arousal, valence)
+        arousal = max(-1.0, min(1.0, arousal))
+        valence = max(-1.0, min(1.0, valence))
+        quadrant = self._quadrant_from_va(arousal, valence)
+        return MoodCoordinates(arousal, valence, quadrant, 0.0)
+
+    def _analyze_with_librosa(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
         features = self._extract_features(audio, sr)
         smoothed = self._apply_temporal_smoothing(features)
         return self._map_to_quadrant(smoothed)
+
+    def _smooth_va(self, arousal: float, valence: float) -> tuple[float, float]:
+        if self._last_va is None:
+            self._last_va = (arousal, valence)
+            return arousal, valence
+        alpha = self.FEATURE_EMA_ALPHA
+        a = alpha * arousal + (1 - alpha) * self._last_va[0]
+        v = alpha * valence + (1 - alpha) * self._last_va[1]
+        self._last_va = (a, v)
+        return a, v
+
+    @staticmethod
+    def _quadrant_from_va(arousal: float, valence: float) -> str:
+        if arousal >= 0 and valence >= 0:
+            return "VIGOROUS"
+        if arousal >= 0 and valence < 0:
+            return "TENSE"
+        if arousal < 0 and valence < 0:
+            return "MELANCHOLY"
+        return "CALM"
 
     def _extract_features(self, audio: np.ndarray, sr: int) -> dict:
         rms = librosa.feature.rms(y=audio)[0]

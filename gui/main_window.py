@@ -19,6 +19,7 @@ from core.playlist_config import PlaylistConfig
 from core.template_library import TemplateLibrary
 from core.audio_capture import AudioCaptureManager
 from core.audio_analyzer import AudioAnalyzer
+from core.music2emo_client import Music2EmoClient
 from process_audio_capture import ProcessAudioCapture
 
 from gui.theme import MAIN_QSS, MOOD_LABELS, MOOD_COLORS
@@ -95,7 +96,12 @@ class MainWindow(QMainWindow):
             menu_appear_ms=config.menu_appear_ms,
         )
         self._audio_capture = AudioCaptureManager()
-        self._audio_analyzer = AudioAnalyzer(self._audio_capture)
+        m2e_cfg = config.music2emo_config
+        self._m2e_client = (
+            Music2EmoClient(m2e_cfg["venv_python"], m2e_cfg["server_script"])
+            if m2e_cfg["enabled"] else None
+        )
+        self._audio_analyzer = AudioAnalyzer(self._audio_capture, self._m2e_client)
 
         # ── State ───────────────────────────────────────────────────
         self._current_track: TrackInfo | None = None
@@ -114,10 +120,8 @@ class MainWindow(QMainWindow):
 
     def _init_ui(self):
         self.setWindowTitle("MusicClassifier")
-        screen = QGuiApplication.primaryScreen()
-        dpr = screen.devicePixelRatio() if screen else 1.0
-        self.setFixedWidth(int(240 * dpr))
-        self.setFixedHeight(int(360 * dpr))
+        self.setFixedWidth(360)
+        self.setFixedHeight(520)
         self.setStyleSheet(MAIN_QSS)
 
         outer = QWidget()
@@ -153,16 +157,16 @@ class MainWindow(QMainWindow):
         # ── Main area ───────────────────────────────────────────────
         main_area = QWidget()
         main_layout = QVBoxLayout(main_area)
-        main_layout.setContentsMargins(8, 6, 8, 6)
-        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
 
         self._track_card = TrackCard(self)
         main_layout.addWidget(self._track_card)
 
         # Mood status bar — idle until user clicks start
-        init_text = "点击 ▶ 开始" if not self._mood_unsupported else "环境音频捕获不可用"
-        init_style = ("font-size: 10px; font-weight: 400; color: #9aa0a6; "
-                      "padding: 3px 8px; border-radius: 6px; background-color: #f1f3f4;")
+        init_text = "点击开始" if not self._mood_unsupported else "环境音频捕获不可用"
+        init_style = ("font-size: 11px; font-weight: 400; color: #9aa0a6; "
+                      "padding: 3px 8px; border-radius: 14px; background-color: #f1f3f4;")
         self._mood_status = QLabel(init_text)
         self._mood_status.setObjectName("mood_status")
         self._mood_status.setStyleSheet(init_style)
@@ -170,6 +174,8 @@ class MainWindow(QMainWindow):
 
         self._quadrant_chart = QuadrantChart(self)
         main_layout.addWidget(self._quadrant_chart, 1)
+
+        main_layout.addSpacing(16)
 
         self._playlist_grid = PlaylistGrid(
             moods, self._volumes, self._on_classify, self,
@@ -198,8 +204,8 @@ class MainWindow(QMainWindow):
     def _set_status(self, text: str, color: str, bg: str, weight: int = 500):
         self._mood_status.setText(text)
         self._mood_status.setStyleSheet(
-            f"font-size: 10px; font-weight: {weight}; color: {color}; "
-            f"padding: 3px 8px; border-radius: 6px; background-color: {bg};"
+            f"font-size: 11px; font-weight: {weight}; color: {color}; "
+            f"padding: 3px 8px; border-radius: 14px; background-color: {bg};"
         )
 
     # ───────────────────── Workflow ─────────────────────────────────
@@ -216,7 +222,7 @@ class MainWindow(QMainWindow):
             self._track_card.reset()
             self._playlist_grid.set_buttons_active(False)
             self._quadrant_chart.reset()
-            self._set_status("已暂停 点击 ▶ 继续", "#9aa0a6", "#f1f3f4", 400)
+            self._set_status("已暂停，点击继续", "#9aa0a6", "#f1f3f4", 400)
         else:
             # Start OCR + audio
             if not self._screen_capture.find_window():

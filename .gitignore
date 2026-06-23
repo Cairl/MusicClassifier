@@ -10,3 +10,9 @@ build/
 venv/
 run_sync.bat
 .superpowers/
+
+# music2emo engine — third-party repo (273MB) and its venv, not tracked
+music2emo_engine/music2emo_repo/
+music2emo_engine/.venv/
+
+changelog.md

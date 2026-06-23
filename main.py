@@ -27,7 +27,8 @@ def main():
         return
 
     app = QApplication(sys.argv)
-    font = QFont("Microsoft JhengHei", 9)
+    font = QFont("DengXian", 9)
+    font.setBold(True)
     font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(font)
     try:
