@@ -22,11 +22,12 @@ from core.audio_analyzer import AudioAnalyzer
 from core.music2emo_client import Music2EmoClient
 from process_audio_capture import ProcessAudioCapture
 
-from gui.theme import MAIN_QSS, MOOD_LABELS, MOOD_COLORS
+from gui.theme import MAIN_QSS
 from gui.sidebar import Sidebar
 from gui.track_card import TrackCard
 from gui.playlist_grid import PlaylistGrid
 from gui.quadrant_chart import QuadrantChart
+from gui.spectrum_bar import SpectrumBar, _FFT_SIZE
 from gui.screenshot_library import ScreenshotLibrary
 
 
@@ -34,7 +35,6 @@ class Signals(QObject):
     track_detected = Signal(object)
     classification_done = Signal(object)
     error_occurred = Signal(str)
-    window_activated = Signal()
 
 
 class _OcrHighlightOverlay(QWidget):
@@ -109,6 +109,8 @@ class MainWindow(QMainWindow):
         self._mood_active = False
         self._mood_unsupported = not ProcessAudioCapture.is_supported()
         self._ocr_overlay_widget: _OcrHighlightOverlay | None = None
+        self._detecting = False
+        self._classifying = False
 
         self.setWindowIcon(QIcon())
 
@@ -120,8 +122,8 @@ class MainWindow(QMainWindow):
 
     def _init_ui(self):
         self.setWindowTitle("MusicClassifier")
-        self.setFixedWidth(360)
-        self.setFixedHeight(520)
+        self.setFixedWidth(620)
+        self.setFixedHeight(400)
         self.setStyleSheet(MAIN_QSS)
 
         outer = QWidget()
@@ -157,30 +159,38 @@ class MainWindow(QMainWindow):
         # ── Main area ───────────────────────────────────────────────
         main_area = QWidget()
         main_layout = QVBoxLayout(main_area)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(6)
 
         self._track_card = TrackCard(self)
         main_layout.addWidget(self._track_card)
 
-        # Mood status bar — idle until user clicks start
-        init_text = "点击开始" if not self._mood_unsupported else "环境音频捕获不可用"
-        init_style = ("font-size: 11px; font-weight: 400; color: #9aa0a6; "
-                      "padding: 3px 8px; border-radius: 14px; background-color: #f1f3f4;")
-        self._mood_status = QLabel(init_text)
-        self._mood_status.setObjectName("mood_status")
-        self._mood_status.setStyleSheet(init_style)
-        main_layout.addWidget(self._mood_status)
+        main_layout.addSpacing(2)
 
-        self._quadrant_chart = QuadrantChart(self)
-        main_layout.addWidget(self._quadrant_chart, 1)
+        self._spectrum_bar = SpectrumBar(self)
+        self._spectrum_bar.set_update_callback(self._spectrum_tick)
+        main_layout.addWidget(self._spectrum_bar)
 
-        main_layout.addSpacing(16)
+        main_layout.addSpacing(6)
+
+        # ── Playlist grid (left) + Quadrant chart (right) ──────────
+        bottom_container = QWidget()
+        bottom_layout = QHBoxLayout(bottom_container)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(8)
 
         self._playlist_grid = PlaylistGrid(
             moods, self._volumes, self._on_classify, self,
         )
-        main_layout.addWidget(self._playlist_grid)
+        self._playlist_grid.setFixedHeight(220)
+        bottom_layout.addWidget(self._playlist_grid, 1)
+
+        self._quadrant_chart = QuadrantChart(self)
+        self._quadrant_chart.setFixedHeight(220)
+        bottom_layout.addWidget(self._quadrant_chart, 1)
+
+        main_layout.addWidget(bottom_container)
+        main_layout.addStretch(1)
 
         body_layout.addWidget(main_area)
         outer_layout.addWidget(body)
@@ -189,7 +199,6 @@ class MainWindow(QMainWindow):
         self._signals.track_detected.connect(self._handle_track_detected)
         self._signals.classification_done.connect(self._handle_classification_done)
         self._signals.error_occurred.connect(self._handle_error)
-        self._signals.window_activated.connect(self._on_window_activated)
         self._audio_analyzer.signals.mood_analyzed.connect(self._handle_mood_analyzed)
         self._audio_analyzer.signals.analysis_error.connect(self._handle_analysis_error)
         self._audio_analyzer.signals.boundary_detected.connect(self._handle_boundary)
@@ -197,16 +206,6 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Nothing starts automatically — user clicks ▶ to begin
-
-    # ───────────────────── Status helper ────────────────────────────
-
-    def _set_status(self, text: str, color: str, bg: str, weight: int = 500):
-        self._mood_status.setText(text)
-        self._mood_status.setStyleSheet(
-            f"font-size: 11px; font-weight: {weight}; color: {color}; "
-            f"padding: 3px 8px; border-radius: 14px; background-color: {bg};"
-        )
 
     # ───────────────────── Workflow ─────────────────────────────────
 
@@ -222,7 +221,7 @@ class MainWindow(QMainWindow):
             self._track_card.reset()
             self._playlist_grid.set_buttons_active(False)
             self._quadrant_chart.reset()
-            self._set_status("已暂停，点击继续", "#9aa0a6", "#f1f3f4", 400)
+            self._spectrum_bar.stop()
         else:
             # Start OCR + audio
             if not self._screen_capture.find_window():
@@ -232,14 +231,13 @@ class MainWindow(QMainWindow):
             self._screen_capture.activate_window()
             self._sidebar.play_button.set_active(True)
             self._running = True
-            self._set_status("启动中...", "#5f6368", "#e8eaed")
             self._capture_and_detect()
             # Start audio detection
             if not self._mood_unsupported:
+                self._spectrum_bar.start()
                 threading.Thread(target=self._start_audio, daemon=True).start()
 
     def _start_audio(self):
-        """Background: start audio capture + analysis."""
         if self._audio_capture.start():
             self._audio_analyzer.start()
             self._mood_active = True
@@ -247,66 +245,79 @@ class MainWindow(QMainWindow):
             print("[AUDIO] 音频捕获启动失败", file=sys.stderr, flush=True)
             self._signals.error_occurred.emit("音频捕获启动失败，请检查 Apple Music 是否正在播放")
 
-    def _on_window_activated(self):
-        if not self._running:
-            return
-        image = self._screen_capture.capture_list_region(
-            delay_ms=self._config.before_screenshot_ms
-        )
-        if image is None:
-            self._signals.error_occurred.emit("截图失败，请确认 Apple Music 窗口可见")
-            return
-        win_rect = self._screen_capture.get_window_rect()
-        offset = (win_rect[:2] if win_rect else (0, 0))
-        # Get window size for list-region coordinate conversion
-        win_w = win_rect[2] - win_rect[0] if win_rect else 0
-        win_h = win_rect[3] - win_rect[1] if win_rect else 0
-
-        # Use position templates if available for precise OCR
-        # Coordinates are window-relative; need to convert to list-region-relative
-        rl, rt, _, _ = self._screen_capture._list_region_ratio
-
-        song_box = self._template_lib.get_cached_region("position/song_name")
-        artist_box = self._template_lib.get_cached_region("position/artist")
-        tracks = self._ocr_reader.read_tracks(
-            image, offset,
-            song_region_box=(
-                (song_box["x"] - int(win_w * rl),
-                 song_box["y"] - int(win_h * rt),
-                 song_box["w"], song_box["h"])
-            ) if song_box and win_w else None,
-            artist_region_box=(
-                (artist_box["x"] - int(win_w * rl),
-                 artist_box["y"] - int(win_h * rt),
-                 artist_box["w"], artist_box["h"])
-            ) if artist_box and win_w else None,
-        )
-        if not tracks:
-            self._signals.error_occurred.emit("OCR 未识别到歌曲，请确认播放列表可见")
-            return
-        self._signals.track_detected.emit(tracks[0])
+    def _spectrum_tick(self):
+        import numpy as np
+        mono = self._audio_capture.get_recent_samples(_FFT_SIZE)
+        if mono is not None:
+            mono = np.mean(mono, axis=0).astype(np.float32)
+            levels = self._spectrum_bar.compute_fft(mono)
+            self._spectrum_bar.update_levels(levels)
 
     def _capture_and_detect(self):
         if not self._running:
             return
+        if self._detecting:
+            return
+        self._detecting = True
 
         def worker():
             try:
                 if not self._screen_capture.activate_window():
                     self._signals.error_occurred.emit("窗口激活失败，请确认 Apple Music 窗口存在")
                     return
-                self._signals.window_activated.emit()
+                image = self._screen_capture.capture_list_region(
+                    delay_ms=self._config.before_screenshot_ms
+                )
+                if image is None:
+                    self._signals.error_occurred.emit("截图失败，请确认 Apple Music 窗口可见")
+                    return
+                win_rect = self._screen_capture.get_window_rect()
+                offset = (win_rect[:2] if win_rect else (0, 0))
+                win_w = win_rect[2] - win_rect[0] if win_rect else 0
+                win_h = win_rect[3] - win_rect[1] if win_rect else 0
+
+                rl, rt, _, _ = self._screen_capture._list_region_ratio
+
+                song_box = self._template_lib.get_cached_region("position/song_name")
+                artist_box = self._template_lib.get_cached_region("position/artist")
+                tracks = self._ocr_reader.read_tracks(
+                    image, offset,
+                    song_region_box=(
+                        (song_box["x"] - int(win_w * rl),
+                         song_box["y"] - int(win_h * rt),
+                         song_box["w"], song_box["h"])
+                    ) if song_box and win_w else None,
+                    artist_region_box=(
+                        (artist_box["x"] - int(win_w * rl),
+                         artist_box["y"] - int(win_h * rt),
+                         artist_box["w"], artist_box["h"])
+                    ) if artist_box and win_w else None,
+                )
+                if not tracks:
+                    self._signals.error_occurred.emit("OCR 未识别到歌曲，请确认播放列表可见")
+                    return
+                self._signals.track_detected.emit(tracks[0])
             except Exception as e:
                 traceback.print_exc()
                 self._signals.error_occurred.emit(f"识别异常: {e}")
+            finally:
+                self._detecting = False
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_track_detected(self, track: TrackInfo):
+        is_same_track = (
+            self._current_track is not None
+            and track.song_name == self._current_track.song_name
+            and track.artist == self._current_track.artist
+        )
         self._current_track = track
-        self._track_card.set_track(track.song_name, track.artist, track.album)
+        if not is_same_track:
+            self._track_card.set_track(track.song_name, track.artist, track.album)
+            self._show_ocr_highlights(track)
+            if self._mood_active:
+                self._audio_analyzer.force_reset()
         self._playlist_grid.set_buttons_active(True)
-        self._show_ocr_highlights(track)
 
         missing = self._template_lib.get_missing_templates(self._config)
         missing_playlists = {
@@ -379,6 +390,7 @@ class MainWindow(QMainWindow):
 
         track = self._current_track
         self._playlist_grid.set_buttons_active(False)
+        self._classifying = True
 
         def worker():
             try:
@@ -390,6 +402,8 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 traceback.print_exc()
                 self._signals.error_occurred.emit(f"分类失败: {e}")
+            finally:
+                self._classifying = False
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -408,31 +422,22 @@ class MainWindow(QMainWindow):
 
         if confidence >= 0.6:
             self._playlist_grid.highlight_quadrant(quadrant)
-            # Enable buttons so user can click highlighted playlists
             self._playlist_grid.set_buttons_active(True)
-            tag_label = MOOD_LABELS.get(quadrant, quadrant)
-            c = MOOD_COLORS.get(quadrant, {})
-            self._set_status(tag_label, c.get('fg', '#1a73e8'),
-                             c.get('bg', '#e8f0fe'), 600)
         else:
             self._playlist_grid.clear_highlight()
-            if confidence > 0:
-                pct = f"{confidence:.0%}"
-                self._set_status(f"分析中... {pct}", "#5f6368", "#e8eaed")
 
     def _handle_analysis_error(self, msg: str):
         print(f"[ANALYSIS ERROR] {msg}", file=sys.stderr, flush=True)
-        self._set_status("分析异常", "#c62828", "#fce4ec", 400)
 
     def _handle_boundary(self):
         self._playlist_grid.clear_highlight()
         self._quadrant_chart.show_boundary()
-        self._set_status("检测到切歌，重新分析", "#e65100", "#fff3e0")
+        if self._running and not self._classifying:
+            self._capture_and_detect()
 
     def _handle_no_audio(self):
         self._playlist_grid.clear_highlight()
         self._quadrant_chart.reset()
-        self._set_status("Apple Music 未在播放", "#9aa0a6", "#f1f3f4", 400)
 
     # ────────────────────── Errors ──────────────────────────────────
 

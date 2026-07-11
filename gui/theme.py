@@ -46,12 +46,12 @@ MOOD_LABELS = {
 }
 
 # ── Typography ─────────────────────────────────────────────────────
-FONT_SIZE_XXS = "7px"
-FONT_SIZE_XS = "10px"
-FONT_SIZE_SM = "11px"
-FONT_SIZE_MD = "12px"
-FONT_SIZE_LG = "14px"
-FONT_SIZE_TITLE = "15px"
+FONT_SIZE_XXS = "8px"
+FONT_SIZE_XS = "11px"
+FONT_SIZE_SM = "12px"
+FONT_SIZE_MD = "13px"
+FONT_SIZE_LG = "15px"
+FONT_SIZE_TITLE = "16px"
 
 FONT_WEIGHT_NORMAL = "700"
 FONT_WEIGHT_MEDIUM = "700"
@@ -66,14 +66,15 @@ SPACING_MD = 8
 SPACING_LG = 10
 
 # ── Sizing ─────────────────────────────────────────────────────────
-SIDEBAR_WIDTH = 64
-SIDEBAR_BUTTON_SIZE = 44
-SIDEBAR_ICON_SIZE = 28
+SIDEBAR_WIDTH = 68
+SIDEBAR_BUTTON_SIZE = 48
+SIDEBAR_ICON_SIZE = 30
 
-CARD_HEIGHT = 68
+CARD_HEIGHT = 76
+SPECTRUM_BAR_HEIGHT = 32
 
-PLAYLIST_BTN_MIN_HEIGHT = 30
-PLAYLIST_BTN_PADDING = "5px 4px"
+PLAYLIST_BTN_MIN_HEIGHT = 34
+PLAYLIST_BTN_PADDING = "6px 5px"
 
 # ── Border Radius (squircle-approximated, ~0.7x of control height) ──
 RADIUS_SM = "14px"

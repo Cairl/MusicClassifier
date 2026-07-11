@@ -16,16 +16,10 @@ TAG_LABELS = ["活力", "紧张", "忧郁", "平静"]
 class PlaylistGrid(QWidget):
     """5-column playist button grid driven by PlaylistConfig data."""
 
-    classify_requested = None  # Signal replaced by on_classify callback
+    classify_requested = None
 
     def __init__(self, moods: list[dict], volumes: list[str],
                  on_classify: callable, parent: QWidget | None = None):
-        """
-        Args:
-            moods: result of config.get_all_moods_flat()
-            volumes: ordered list of volume names
-            on_classify: callable(playlist_name, volume_name)
-        """
         super().__init__(parent)
         self._buttons: list[QPushButton] = []
         self._moods = moods
@@ -64,7 +58,8 @@ class PlaylistGrid(QWidget):
                 self._buttons.append(btn)
                 grid.addWidget(btn, row_idx, col_idx)
 
-        grid.setRowStretch(len(self._volumes) + 1, 1)
+        for row in range(1, len(self._volumes) + 1):
+            grid.setRowStretch(row, 1)
 
         self.set_buttons_active(False)
         self._clear_highlight()
@@ -74,7 +69,6 @@ class PlaylistGrid(QWidget):
             btn.setEnabled(active)
 
     def disable_missing_playlists(self, missing_playlist_names: set[str]) -> None:
-        """Disable buttons whose playlist template is missing."""
         idx = 0
         for volume_name in self._volumes:
             vol_moods = {m["tag"]: m for m in self._moods
@@ -88,7 +82,6 @@ class PlaylistGrid(QWidget):
                 idx += 1
 
     def highlight_quadrant(self, quadrant: str) -> None:
-        """Highlight buttons matching the recommended mood quadrant."""
         idx = 0
         for volume_name in self._volumes:
             vol_moods = {m["tag"]: m for m in self._moods
@@ -105,7 +98,6 @@ class PlaylistGrid(QWidget):
                 idx += 1
 
     def _clear_highlight(self) -> None:
-        """Reset all buttons to default style."""
         for btn in self._buttons:
             btn.setStyleSheet(PLAYLIST_BTN_QSS)
 

@@ -1,3 +1,4 @@
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -31,11 +32,11 @@ class AudioAnalyzer:
     WARMUP_STEP = 2.0
     HISTORY_SIZE = 7
     BOUNDARY_THRESHOLD = 0.8
-    BOUNDARY_THRESHOLD_LOCKED = 1.2
+    BOUNDARY_THRESHOLD_LOCKED = 1.0
     STABILIZATION_COUNT = 4
     COORD_HISTORY = 5
     LOCK_CONFIDENCE = 0.6
-    SILENCE_RMS_THRESHOLD = 0.008
+    SILENCE_RMS_THRESHOLD = 0.003
 
     FEATURE_EMA_ALPHA = 0.35
     FEATURE_BUFFER_SIZE = 5
@@ -47,7 +48,7 @@ class AudioAnalyzer:
     NORM_BANDWIDTH = 6000.0
     NORM_CENTROID = 5000.0
     NORM_ZCR = 0.15
-    NORM_HARMONIC = 1.5
+    NORM_HARMONIC = 0.6
     NORM_CONTRAST = 35.0
     NORM_ONSET = 1.5
     NORM_ROLLOFF = 8000.0
@@ -93,6 +94,9 @@ class AudioAnalyzer:
         if self._m2e_client is not None:
             self._m2e_client.stop()
 
+    def force_reset(self) -> None:
+        self._reset_state()
+
     def _reset_state(self) -> None:
         self._recent_quadrants.clear()
         self._recent_coords.clear()
@@ -115,13 +119,15 @@ class AudioAnalyzer:
                     rms = float(np.sqrt(np.mean(mono ** 2)))
                     if rms < self.SILENCE_RMS_THRESHOLD:
                         silence_streak += 1
+                        print(f"[AUDIO] Silence: RMS={rms:.6f} < {self.SILENCE_RMS_THRESHOLD}, streak={silence_streak}",
+                              file=sys.stderr, flush=True)
                         if silence_streak >= 3:
                             self._signals.no_audio.emit()
                         event = threading.Event()
                         event.wait(timeout=self.ANALYSIS_INTERVAL)
                         continue
                     silence_streak = 0
-                    result = self._analyze_chunk(mono, 48000)
+                    result = self._analyze_chunk(mono, self._capture.sample_rate)
                     self._handle_result(result)
                     if self._warmup_window < self.SNAPSHOT_SECONDS:
                         self._warmup_window = min(
@@ -141,7 +147,7 @@ class AudioAnalyzer:
     def _handle_result(self, result: MoodCoordinates) -> None:
         coord = (result.arousal, result.valence)
 
-        if self._detect_boundary(coord):
+        if self._detect_boundary(coord, result):
             self._recent_quadrants.clear()
             self._recent_coords.clear()
             self._boundary_countdown = self.STABILIZATION_COUNT
@@ -154,9 +160,7 @@ class AudioAnalyzer:
             self._signals.boundary_detected.emit()
 
         self._recent_coords.append(coord)
-
-        if not self._locked:
-            self._recent_quadrants.append(result.quadrant)
+        self._recent_quadrants.append(result.quadrant)
 
         if self._locked:
             self._signals.mood_analyzed.emit(
@@ -184,10 +188,15 @@ class AudioAnalyzer:
             result.quadrant, result.confidence
         )
 
-    def _detect_boundary(self, current: tuple[float, float]) -> bool:
+    def _detect_boundary(self, current: tuple[float, float],
+                         result: MoodCoordinates) -> bool:
         if self._boundary_cooldown > 0:
             self._boundary_cooldown -= 1
             return False
+
+        if self._locked and result.quadrant != self._locked_quadrant:
+            return True
+
         if len(self._recent_coords) < 3:
             return False
 
@@ -203,19 +212,23 @@ class AudioAnalyzer:
         return distance > threshold
 
     def _analyze_chunk(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
-        if self._m2e_client is not None and self._m2e_client.available:
-            return self._analyze_with_music2emo(audio, sr)
-        return self._analyze_with_librosa(audio, sr)
+        if self._m2e_client is None:
+            self._signals.analysis_error.emit("music2emo 未启用，请在 config.json 中设置 music2emo.enabled=true")
+            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
+        if not self._m2e_client.available:
+            self._signals.analysis_error.emit("music2emo venv 不可用，请运行 music2emo_engine/install.bat")
+            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
+        return self._analyze_with_music2emo(audio, sr)
 
     def _analyze_with_music2emo(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
         try:
             out = self._m2e_client.predict_audio(audio, sr)
         except Exception as exc:
             self._signals.analysis_error.emit(f"music2emo unavailable: {exc}")
-            return self._analyze_with_librosa(audio, sr)
+            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
         if "error" in out:
             self._signals.analysis_error.emit(f"music2emo error: {out['error']}")
-            return self._analyze_with_librosa(audio, sr)
+            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
         arousal = (float(out["arousal"]) - 5.0) / 4.0
         valence = (float(out["valence"]) - 5.0) / 4.0
         arousal, valence = self._smooth_va(arousal, valence)
@@ -324,9 +337,9 @@ class AudioAnalyzer:
 
         arousal_raw = (
             features["tempo_norm"] * 0.35
-            + features["rms_norm"] * 0.25
+            + features["rms_norm"] * 0.20
             + features["bandwidth_norm"] * 0.10
-            + onset * 0.15
+            + onset * 0.20
             + rolloff * 0.15
         )
 
@@ -335,13 +348,13 @@ class AudioAnalyzer:
             + features["centroid_norm"] * 0.15
             + features["harmonic_ratio"] * 0.20
             + rolloff * 0.15
-            - features["rms_norm"] * 0.10
+            - features["rms_norm"] * 0.03
             - features["zcr_norm"] * 0.05
             - flatness * 0.05
         )
 
         arousal = max(-1.0, min(1.0, arousal_raw * 2 - 1))
-        valence = max(-1.0, min(1.0, (valence_raw - 0.30) * 2.5))
+        valence = max(-1.0, min(1.0, (valence_raw - 0.20) * 2.5))
 
         if arousal >= 0 and valence >= 0:
             quadrant = "VIGOROUS"

@@ -50,9 +50,9 @@ Additionally, the app features a **real-time audio mood analysis** system: it ca
 - No custom `paintEvent` for DPI scaling compatibility
 
 ### Layout
-|- Sidebar (64px): white background + 1px `#e8eaed` separator; play button at top, library and about buttons at bottom
-|- Main area: track info card (song name + album, 12px rounded, no border) → mood status bar → quadrant chart → 5-column playlist grid
-- Window fixed at 360x520 **logical** pixels; Qt6 handles High DPI scaling automatically — never multiply sizes by `devicePixelRatio` manually (causes double-scaling and blurry buttons). All QSS `px` values are logical pixels.
+|- Sidebar (68px): white background + 1px `#e8eaed` separator; play button at top, library button below
+|- Main area: track info card → mood status bar → spectrum bar (16-band FFT) → [playlist grid (left) | quadrant chart (right)] side-by-side
+- Window fixed at 620x400 **logical** pixels; Qt6 handles High DPI scaling automatically — never multiply sizes by `devicePixelRatio` manually (causes double-scaling and blurry buttons). All QSS `px` values are logical pixels.
 - SVG icons rendered via `QPixmap` must call `setDevicePixelRatio(dpr)` (or be created at `size*dpr`) or they blur on high-DPI screens. See `gui/sidebar.py:_svg_icon`.
 - Grid spacing 4px, card padding 10px
 
@@ -132,7 +132,7 @@ Apple Music playlist view has 4 columns. X center ratio boundaries (relative to 
 | Album  | 0.55 – 0.78  |
 | Other  | 0.78+        |
 
-Song names are refined by a second OCR pass: crop the left 30% of the image and upscale 3x before re-recognizing.
+Song names are recognized in a single OCR pass. When position templates (`position/song_name`, `position/artist`) exist, only those precise sub-regions are OCR'd instead of the full image.
 
 ### Screenshot Region
 
@@ -152,9 +152,9 @@ Default screenshot region ratio: `(0.10, 0.30, 0.98, 0.88)` — left 10%, top 30
 2. `AudioAnalyzer._analysis_loop()` — every 3s captures latest N seconds of stereo audio → converts to mono
 3. `_extract_features()` — computes RMS, tempo, spectral centroid, bandwidth, ZCR, harmonic ratio, spectral contrast, spectral flatness, onset strength (log-compressed to dampen transient-heavy instruments like piano), spectral rolloff, MFCC (13 coefficients); normalizes each to [0,1]
 4. `_apply_temporal_smoothing()` — EMA filter (α=0.35) over a 5-frame buffer to reduce inter-frame feature jitter
-5. `_map_to_quadrant()` — arousal = `tempo×0.35 + RMS×0.25 + bandwidth×0.10 + onset×0.15 + rolloff×0.15`; valence = `contrast×0.30 + centroid×0.15 + harmonic×0.20 + rolloff×0.15 - RMS×0.10 - ZCR×0.05 - flatness×0.05`; tempo is the dominant arousal driver to prevent piano/strings bandwidth from causing false high-energy readings
+5. `_map_to_quadrant()` — arousal = `tempo×0.35 + RMS×0.20 + bandwidth×0.10 + onset×0.20 + rolloff×0.15`; valence = `contrast×0.30 + centroid×0.15 + harmonic×0.20 + rolloff×0.15 - RMS×0.03 - ZCR×0.05 - flatness×0.05`; valence offset 0.20, scale 2.5; `NORM_HARMONIC=0.6` (harmonic_ratio typically 0.2-0.6 in real music)
 6. Stabilization: need 4 consistent quadrant readings before locking (confidence ≥ 60%); confidence = consistency×0.6 + boundary_margin×0.4 (distance from axes)
-7. Boundary detection: if 5 consecutive coordinates deviate > 0.8 (locked: 1.2) from rolling mean → reset analysis with 2-frame cooldown (new song detected)
+7. Boundary detection: if 5 consecutive coordinates deviate > 0.8 (locked: 1.0) from rolling mean → reset analysis with 2-frame cooldown (new song detected). Lock mechanism always records quadrant history (even when locked) to allow self-correction.
 
 ## Common Pitfalls
 
@@ -162,5 +162,6 @@ Default screenshot region ratio: `(0.10, 0.30, 0.98, 0.88)` — left 10%, top 30
 - **PaddleOCR 3.x**: Removed `show_log` parameter, changed `ocr()` to `predict()`. Must use 2.x.
 - **Window activation**: May silently fail on Windows. `activate_window()` has a minimize→restore fallback.
 - **4K display scaling**: `pygetwindow` may return negative coordinates (e.g., -12) for maximized windows on Windows. This is normal.
-- **OCR accuracy**: Leftmost column song names are small and often partially recognized. The two-pass OCR (full image + 3x upscaled song region) mitigates this but is not perfect.
-- **Audio capture**: `process-audio-capture` requires Windows 10 2004+ (named pipe support). `AudioCaptureManager` only works when Apple Music is playing audio.
+- **OCR accuracy**: Leftmost column song names are small and often partially recognized. Position templates (`position/song_name`) mitigate this by OCR'ing a precise sub-region instead of the full image.
+- **OCR threading**: PaddleOCR inference runs entirely in a background worker thread (`_capture_and_detect` → `worker`). Never call `OCRReader.read_tracks()` from the main/UI thread — it blocks for 1-3 seconds.
+- **Audio capture**: `process-audio-capture` requires Windows 10 2004+ (named pipe support). `AudioCaptureManager` only works when Apple Music is playing audio. WAV header parsing accepts any format (16/24/32-bit int or float, mono/stereo/multi-channel); `_store_pcm` decodes accordingly. Key diagnostics are logged to stderr with `[AUDIO]` prefix.

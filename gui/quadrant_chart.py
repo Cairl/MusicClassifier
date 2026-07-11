@@ -38,7 +38,7 @@ _DOT_SIZE = 12
 _DOT_BORDER = 4
 _ANIM_DURATION_MS = 700
 
-_CHART_MIN_HEIGHT = 120
+_CHART_MIN_HEIGHT = 160
 _LABEL_BOTTOM_PAD = 2
 
 
@@ -159,7 +159,7 @@ class QuadrantChart(QWidget):
 
         # ── Rounded clip ──────────────────────────────────────────
         clip_path = QPainterPath()
-        clip_path.addRoundedRect(ox, oy, side, side, 8, 8)
+        clip_path.addRoundedRect(ox, oy, side, side, 10, 10)
         painter.setClipPath(clip_path)
 
         # ── Flat quadrant fills ───────────────────────────────────
@@ -254,6 +254,6 @@ class QuadrantChart(QWidget):
         border_pen = QPen(QColor("#E5E7EB"), 1)
         painter.setPen(border_pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(ox, oy, side, side, 8, 8)
+        painter.drawRoundedRect(ox, oy, side, side, 10, 10)
 
         painter.end()

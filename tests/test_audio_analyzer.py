@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 import numpy as np
 import pytest
 
-from core.audio_analyzer import AudioAnalyzer, MoodCoordinates
+from core.audio_analyzer import AudioAnalyzer, MoodCoordinates, MoodCoordinates
 
 
 class TestMoodCoordinates:
@@ -18,10 +18,10 @@ class TestMoodCoordinates:
 class TestMapToQuadrant:
     def test_vigorous_quadrant(self):
         analyzer = AudioAnalyzer(MagicMock())
-        features = {"rms_norm": 0.8, "tempo_norm": 0.7, "bandwidth_norm": 0.6,
-                    "centroid_norm": 0.7, "zcr_norm": 0.2, "harmonic_ratio": 0.6,
-                    "spectral_contrast": 0.7, "flatness": 0.1, "onset_strength": 0.7,
-                    "rolloff_norm": 0.7}
+        features = {"rms_norm": 0.7, "tempo_norm": 0.6, "bandwidth_norm": 0.6,
+                    "centroid_norm": 0.5, "zcr_norm": 0.3, "harmonic_ratio": 0.5,
+                    "spectral_contrast": 0.6, "flatness": 0.1, "onset_strength": 0.6,
+                    "rolloff_norm": 0.6}
         result = analyzer._map_to_quadrant(features)
         assert result.quadrant == "VIGOROUS"
         assert result.arousal > 0
@@ -29,7 +29,7 @@ class TestMapToQuadrant:
 
     def test_tense_quadrant(self):
         analyzer = AudioAnalyzer(MagicMock())
-        features = {"rms_norm": 0.8, "tempo_norm": 0.7, "bandwidth_norm": 0.6,
+        features = {"rms_norm": 0.7, "tempo_norm": 0.7, "bandwidth_norm": 0.6,
                     "centroid_norm": 0.2, "zcr_norm": 0.8, "harmonic_ratio": 0.2,
                     "spectral_contrast": 0.2, "flatness": 0.4, "onset_strength": 0.7,
                     "rolloff_norm": 0.3}
@@ -40,10 +40,10 @@ class TestMapToQuadrant:
 
     def test_melancholy_quadrant(self):
         analyzer = AudioAnalyzer(MagicMock())
-        features = {"rms_norm": 0.2, "tempo_norm": 0.3, "bandwidth_norm": 0.2,
-                    "centroid_norm": 0.2, "zcr_norm": 0.7, "harmonic_ratio": 0.3,
-                    "spectral_contrast": 0.3, "flatness": 0.1, "onset_strength": 0.2,
-                    "rolloff_norm": 0.2}
+        features = {"rms_norm": 0.3, "tempo_norm": 0.2, "bandwidth_norm": 0.3,
+                    "centroid_norm": 0.2, "zcr_norm": 0.4, "harmonic_ratio": 0.33,
+                    "spectral_contrast": 0.3, "flatness": 0.2, "onset_strength": 0.2,
+                    "rolloff_norm": 0.3}
         result = analyzer._map_to_quadrant(features)
         assert result.quadrant == "MELANCHOLY"
         assert result.arousal < 0
@@ -305,26 +305,26 @@ class TestBoundaryDetection:
         analyzer = AudioAnalyzer(MagicMock())
         analyzer._boundary_cooldown = 2
         analyzer._recent_coords = [(0.5, 0.5), (0.5, 0.5), (0.5, 0.5)]
-        result = analyzer._detect_boundary((-0.8, -0.8))
+        result = analyzer._detect_boundary((-0.8, -0.8), MoodCoordinates(-0.8, -0.8, "TENSE", 0.0))
         assert result is False
         assert analyzer._boundary_cooldown == 1
 
     def test_boundary_detected_with_large_deviation(self):
         analyzer = AudioAnalyzer(MagicMock())
         analyzer._recent_coords = [(0.3, 0.3), (0.35, 0.35), (0.3, 0.3)]
-        result = analyzer._detect_boundary((-0.8, -0.8))
+        result = analyzer._detect_boundary((-0.8, -0.8), MoodCoordinates(-0.8, -0.8, "TENSE", 0.0))
         assert result is True
 
     def test_no_boundary_with_small_deviation(self):
         analyzer = AudioAnalyzer(MagicMock())
         analyzer._recent_coords = [(0.3, 0.3), (0.35, 0.35), (0.3, 0.3)]
-        result = analyzer._detect_boundary((0.32, 0.32))
+        result = analyzer._detect_boundary((0.32, 0.32), MoodCoordinates(0.32, 0.32, "VIGOROUS", 0.0))
         assert result is False
 
     def test_insufficient_coords_skips_detection(self):
         analyzer = AudioAnalyzer(MagicMock())
         analyzer._recent_coords = [(0.3, 0.3)]
-        result = analyzer._detect_boundary((-0.8, -0.8))
+        result = analyzer._detect_boundary((-0.8, -0.8), MoodCoordinates(-0.8, -0.8, "TENSE", 0.0))
         assert result is False
 
 

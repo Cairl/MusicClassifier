@@ -1,5 +1,4 @@
 import re
-import cv2
 import numpy as np
 from paddleocr import PaddleOCR
 from core.models import TrackInfo
@@ -13,9 +12,6 @@ class OCRReader:
     SONG_X_MAX = 0.28
     ARTIST_X_MAX = 0.55
     ALBUM_X_MAX = 0.78
-
-    SONG_CROP_X_MAX = 0.30
-    SONG_CROP_SCALE = 3
 
     def __init__(self):
         self._ocr: PaddleOCR | None = None
@@ -58,24 +54,23 @@ class OCRReader:
                 crop = image[sy:sy+sh, sx:sx+sw]
                 result = self._ocr.ocr(crop, cls=True)
                 if result and result[0]:
-                    rows: dict[int, list[str]] = {}
+                    texts = []
                     for line in result[0]:
-                        box = line[0]
                         text = line[1][0]
                         conf = line[1][1]
                         if conf < 0.5:
                             continue
+                        if self._is_header_text(text):
+                            continue
+                        texts.append(text)
+                        box = line[0]
                         bx1 = int(min(p[0] for p in box)) + sx
                         by1 = int(min(p[1] for p in box)) + sy
                         bx2 = int(max(p[0] for p in box)) + sx
                         by2 = int(max(p[1] for p in box)) + sy
                         ocr_boxes.append((bx1, by1, bx2 - bx1, by2 - by1, "song"))
-                        y_center = int(sum(p[1] for p in box) / 4)
-                        row_key = y_center // 20 * 20
-                        rows.setdefault(row_key, []).append(text)
-                    if rows:
-                        first_row_key = min(rows.keys())
-                        song_name = " ".join(rows[first_row_key])
+                    if texts:
+                        song_name = " ".join(texts)
                         row_y = sy + sh // 2
 
         if artist_box:
@@ -93,6 +88,8 @@ class OCRReader:
                         text = line[1][0]
                         conf = line[1][1]
                         if conf < 0.5:
+                            continue
+                        if self._is_header_text(text):
                             continue
                         texts.append(text)
                         box = line[0]
@@ -133,8 +130,8 @@ class OCRReader:
             y_max = int(max(p[1] for p in box))
             ocr_lines.append(([x_min, y_min, x_max, y_max], (text, confidence)))
         tracks = self._parse_to_tracks(ocr_lines, image.shape[1], window_offset)
-        tracks = self._refine_song_names(image, tracks, window_offset)
         return tracks
+
     def _is_header_text(self, text: str) -> bool:
         for kw in self.HEADER_KEYWORDS:
             if kw in text:
@@ -208,34 +205,6 @@ class OCRReader:
                 dots_btn_pos=dots_pos,
                 ocr_boxes=ocr_boxes,
             ))
-        return tracks
-
-    def _refine_song_names(self, image: np.ndarray, tracks: list[TrackInfo], window_offset: tuple[int, int]) -> list[TrackInfo]:
-        h, w = image.shape[:2]
-        crop_x_max = int(w * self.SONG_CROP_X_MAX)
-        song_region = image[:, :crop_x_max]
-        scaled = cv2.resize(song_region, None, fx=self.SONG_CROP_SCALE, fy=self.SONG_CROP_SCALE, interpolation=cv2.INTER_CUBIC)
-        result = self._ocr.ocr(scaled, cls=True)
-        if not result or not result[0]:
-            return tracks
-        refined_rows: dict[int, str] = {}
-        for line in result[0]:
-            box = line[0]
-            text = line[1][0]
-            conf = line[1][1]
-            if conf < 0.5:
-                continue
-            y_center = int(min(p[1] for p in box) / self.SONG_CROP_SCALE)
-            row_key = y_center // 80 * 80
-            if row_key not in refined_rows:
-                refined_rows[row_key] = text
-            else:
-                refined_rows[row_key] += " " + text
-        for track in tracks:
-            if track.row_y in refined_rows:
-                refined = refined_rows[track.row_y].strip()
-                if refined and len(refined) > len(track.song_name):
-                    track.song_name = refined
         return tracks
 
     def _estimate_dots_pos(self, row_y: int, img_width: int, window_offset: tuple[int, int]) -> tuple[int, int]:

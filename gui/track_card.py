@@ -16,7 +16,7 @@ class TrackCard(QWidget):
         self.setFixedHeight(CARD_HEIGHT)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(2)
 
         self._name_label = QLabel("等待识别...")

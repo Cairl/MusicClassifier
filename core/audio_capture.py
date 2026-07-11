@@ -1,4 +1,5 @@
 import ctypes
+import sys
 import threading
 import time
 from collections import deque
@@ -32,10 +33,18 @@ class AudioCaptureManager:
         self._header_parsed = False
         self._data_offset: int | None = None
         self._header_buffer = bytearray()
+        self._audio_format: int = 3
+        self._num_channels: int = 2
+        self._sample_rate: int = 48000
+        self._bits_per_sample: int = 32
 
     @property
     def is_capturing(self) -> bool:
         return self._capturing
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
 
     def find_apple_music_pid(self) -> int | None:
         try:
@@ -116,7 +125,7 @@ class AudioCaptureManager:
         if not self._buffer:
             return None
 
-        target_samples = int(seconds * 48000)
+        target_samples = int(seconds * self._sample_rate)
         collected = []
         available = 0
 
@@ -138,12 +147,33 @@ class AudioCaptureManager:
 
         return combined
 
+    def get_recent_samples(self, n_frames: int) -> np.ndarray | None:
+        if not self._buffer:
+            return None
+        samples = list(self._buffer)
+        total = 0
+        chunks = []
+        for s in reversed(samples):
+            chunks.append(s.data)
+            total += s.data.shape[1]
+            if total >= n_frames:
+                break
+        if not chunks:
+            return None
+        chunks.reverse()
+        combined = np.concatenate(chunks, axis=1)
+        if combined.shape[1] > n_frames:
+            combined = combined[:, -n_frames:]
+        return combined
+
     def _pipe_reader(self) -> None:
         ctypes.windll.kernel32.ConnectNamedPipe(self._pipe_handle, None)
         self._connected_event.set()
+        print("[AUDIO] Pipe connected, waiting for data...", file=sys.stderr, flush=True)
 
         buffer = ctypes.create_string_buffer(65536)
         bytes_read = wintypes.DWORD()
+        total_bytes = 0
 
         while not self._stop_event.is_set():
             success = ctypes.windll.kernel32.ReadFile(
@@ -155,9 +185,11 @@ class AudioCaptureManager:
             )
 
             if not success or bytes_read.value == 0:
+                print(f"[AUDIO] Pipe read ended after {total_bytes} bytes", file=sys.stderr, flush=True)
                 break
 
             raw = buffer.raw[:bytes_read.value]
+            total_bytes += bytes_read.value
 
             if not self._header_parsed:
                 self._header_buffer.extend(raw)
@@ -173,19 +205,49 @@ class AudioCaptureManager:
             self._store_pcm(raw)
 
     def _store_pcm(self, raw: bytes) -> None:
-        float_data = np.frombuffer(raw, dtype=np.float32)
-        total_floats = float_data.shape[0]
-        if total_floats < 2:
+        fmt = self._audio_format
+        bits = self._bits_per_sample
+        ch = self._num_channels
+
+        if fmt == 3 and bits == 32:
+            float_data = np.frombuffer(raw, dtype=np.float32)
+        elif fmt == 1 and bits == 16:
+            int_data = np.frombuffer(raw, dtype=np.int16)
+            float_data = int_data.astype(np.float32) / 32768.0
+        elif fmt == 1 and bits == 24:
+            raw_arr = np.frombuffer(raw, dtype=np.uint8)
+            n = len(raw_arr) // 3
+            raw_arr = raw_arr[:n * 3].reshape(-1, 3)
+            int_data = (raw_arr[:, 0].astype(np.int32)
+                        | (raw_arr[:, 1].astype(np.int32) << 8)
+                        | (raw_arr[:, 2].astype(np.int32) << 16))
+            int_data = np.where(int_data >= 0x800000, int_data - 0x1000000, int_data)
+            float_data = int_data.astype(np.float32) / 8388608.0
+        elif fmt == 1 and bits == 32:
+            int_data = np.frombuffer(raw, dtype=np.int32)
+            float_data = int_data.astype(np.float32) / 2147483648.0
+        else:
+            float_data = np.frombuffer(raw, dtype=np.float32)
+
+        total = float_data.shape[0]
+        if total < ch:
             return
-        if total_floats % 2 != 0:
-            float_data = float_data[:total_floats - 1]
-            total_floats = float_data.shape[0]
-        num_samples = total_floats // 2
-        stereo = float_data[:num_samples * 2].reshape(2, num_samples)
+
+        num_frames = total // ch
+        float_data = float_data[:num_frames * ch]
+
+        if ch == 2:
+            stereo = float_data.reshape(2, num_frames)
+        elif ch == 1:
+            mono = float_data.reshape(1, num_frames)
+            stereo = np.vstack([mono, mono])
+        else:
+            all_ch = float_data.reshape(ch, num_frames)
+            stereo = all_ch[:2]
 
         sample = AudioSample(
             data=stereo.copy(),
-            sample_rate=48000,
+            sample_rate=self._sample_rate,
             timestamp=time.time()
         )
         self._buffer.append(sample)
@@ -212,12 +274,20 @@ class AudioCaptureManager:
             if chunk_id == b'fmt ':
                 if chunk_size < 16:
                     return None
-                audio_format = int.from_bytes(data[pos+8:pos+10], 'little')
-                num_channels = int.from_bytes(data[pos+10:pos+12], 'little')
-                bits_per_sample = int.from_bytes(data[pos+22:pos+24], 'little')
-                if audio_format != 3 or num_channels != 2 or bits_per_sample != 32:
-                    # Only IEEE float stereo 32-bit is supported
-                    return None
+                self._audio_format = int.from_bytes(data[pos+8:pos+10], 'little')
+                self._num_channels = int.from_bytes(data[pos+10:pos+12], 'little')
+                self._sample_rate = int.from_bytes(data[pos+12:pos+16], 'little')
+                self._bits_per_sample = int.from_bytes(data[pos+22:pos+24], 'little')
+                if self._audio_format == 0xFFFE and chunk_size >= 40:
+                    subformat_tag = int.from_bytes(data[pos+32:pos+36], 'little')
+                    if subformat_tag == 3:
+                        self._audio_format = 3
+                    elif subformat_tag == 1:
+                        self._audio_format = 1
+                self._max_buffer_samples = self._sample_rate * self.BUFFER_SECONDS
+                print(f"[AUDIO] WAV format: fmt={self._audio_format}, ch={self._num_channels}, "
+                      f"sr={self._sample_rate}, bits={self._bits_per_sample}",
+                      file=sys.stderr, flush=True)
 
             if chunk_id == b'data':
                 return pos + 8

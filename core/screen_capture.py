@@ -26,13 +26,13 @@ class ScreenCapture:
         win = windows[0]
         try:
             win.activate()
-            time.sleep(0.5)
+            time.sleep(0.3)
         except Exception:
             try:
                 win.minimize()
-                time.sleep(0.2)
+                time.sleep(0.15)
                 win.restore()
-                time.sleep(0.5)
+                time.sleep(0.3)
             except Exception:
                 return False
         self._window_rect = (win.left, win.top, win.left + win.width, win.top + win.height)
