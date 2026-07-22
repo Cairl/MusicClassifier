@@ -46,8 +46,6 @@ class _OcrHighlightOverlay(QWidget):
         "artist": "#34a853",
         "album": "#f9ab00",
     }
-    _DISPLAY_MS = 1500
-
     def __init__(self, rects: list[tuple[int, int, int, int, str]],
                  screen_geo: QRect, parent=None):
         super().__init__(parent)
@@ -61,7 +59,10 @@ class _OcrHighlightOverlay(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setGeometry(screen_geo)
-        QTimer.singleShot(self._DISPLAY_MS, self.close)
+
+    def update_rects(self, rects: list[tuple[int, int, int, int, str]]) -> None:
+        self._rects = rects
+        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -234,6 +235,9 @@ class MainWindow(QMainWindow):
             self._playlist_grid.set_buttons_active(False)
             self._quadrant_chart.reset()
             self._spectrum_bar.stop()
+            if self._ocr_overlay_widget is not None:
+                self._ocr_overlay_widget.close()
+                self._ocr_overlay_widget = None
         else:
             # Start OCR + audio
             if not self._screen_capture.find_window():
@@ -347,10 +351,6 @@ class MainWindow(QMainWindow):
         self._playlist_grid.disable_missing_playlists(missing_playlists)
 
     def _show_ocr_highlights(self, track: TrackInfo) -> None:
-        if self._ocr_overlay_widget is not None:
-            self._ocr_overlay_widget.close()
-            self._ocr_overlay_widget = None
-
         if not track.ocr_boxes:
             print(f"[OCR] no ocr_boxes on track", file=sys.stderr, flush=True)
             return
@@ -381,8 +381,14 @@ class MainWindow(QMainWindow):
                   file=sys.stderr, flush=True)
 
         geo = screen.geometry() if screen else QRect(0, 0, 1920, 1080)
-        self._ocr_overlay_widget = _OcrHighlightOverlay(rects, geo, self)
-        self._ocr_overlay_widget.show()
+        if self._ocr_overlay_widget is not None:
+            self._ocr_overlay_widget.setGeometry(geo)
+            self._ocr_overlay_widget.update_rects(rects)
+            if not self._ocr_overlay_widget.isVisible():
+                self._ocr_overlay_widget.show()
+        else:
+            self._ocr_overlay_widget = _OcrHighlightOverlay(rects, geo, self)
+            self._ocr_overlay_widget.show()
 
     def _on_classify(self, playlist_name: str, volume_name: str):
         import sys
