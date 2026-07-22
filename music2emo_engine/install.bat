@@ -17,14 +17,14 @@ if not exist ".venv\Scripts\python.exe" goto :nopy
 
 set "PIP=.venv\Scripts\pip.exe"
 
-echo [2/4] Installing torch 2.3.1 CPU build...
-"%PIP%" install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+echo [2/4] Installing torch 2.7.1 CUDA 12.8 build (RTX 50 series)...
+"%PIP%" install -U torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 goto :torchretry
 goto :torchdone
 
 :torchretry
-echo [WARN] CPU index failed. Retrying from PyPI...
-"%PIP%" install torch==2.3.1 torchaudio==2.3.1
+echo [WARN] cu128 index failed. Falling back to CPU build...
+"%PIP%" install -U torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cpu
 if errorlevel 1 goto :depfail
 
 :torchdone
