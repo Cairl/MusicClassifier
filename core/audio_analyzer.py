@@ -1,9 +1,8 @@
-import sys
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 
-import librosa
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
@@ -26,10 +25,9 @@ class AnalyzerSignals(QObject):
 
 
 class AudioAnalyzer:
-    ANALYSIS_INTERVAL = 6.0
-    SNAPSHOT_SECONDS = 15.0
-    WARMUP_START = 5.0
-    WARMUP_STEP = 2.0
+    WINDOW_SECONDS = 10.0
+    HOP_SECONDS = 2.0
+    MIN_AUDIO_SECONDS = 4.0
     HISTORY_SIZE = 7
     BOUNDARY_THRESHOLD = 0.8
     BOUNDARY_THRESHOLD_LOCKED = 1.0
@@ -38,25 +36,15 @@ class AudioAnalyzer:
     LOCK_CONFIDENCE = 0.6
     SILENCE_RMS_THRESHOLD = 0.003
 
-    FEATURE_EMA_ALPHA = 0.35
-    FEATURE_BUFFER_SIZE = 5
+    FEATURE_EMA_ALPHA = 0.5
     BOUNDARY_COOLDOWN = 2
-
-    NORM_RMS = 0.08
-    NORM_TEMPO_MIN = 50.0
-    NORM_TEMPO_RANGE = 150.0
-    NORM_BANDWIDTH = 6000.0
-    NORM_CENTROID = 5000.0
-    NORM_ZCR = 0.15
-    NORM_HARMONIC = 0.6
-    NORM_CONTRAST = 35.0
-    NORM_ONSET = 1.5
-    NORM_ROLLOFF = 8000.0
+    QUADRANT_DEADZONE = 0.08
 
     def __init__(self, capture_manager: AudioCaptureManager,
                  music2emo_client=None):
         self._capture = capture_manager
         self._m2e_client = music2emo_client
+        self._calibrator = None
         self._running = False
         self._thread: threading.Thread | None = None
         self._signals = AnalyzerSignals()
@@ -65,18 +53,25 @@ class AudioAnalyzer:
         self._boundary_countdown: int = 0
         self._boundary_cooldown: int = 0
         self._current_confidence: float = 0.0
-        self._warmup_window: float = self.WARMUP_START
         self._locked: bool = False
         self._locked_quadrant: str = ""
         self._locked_arousal: float = 0.0
         self._locked_valence: float = 0.0
-        self._feature_buffer: deque[dict] = deque(maxlen=self.FEATURE_BUFFER_SIZE)
-        self._smoothed_features: dict = {}
         self._last_va: tuple[float, float] | None = None
+        self._last_raw_va: tuple[float, float] | None = None
+        self._last_quadrant = ""
+        self._restart_attempted = False
 
     @property
     def signals(self) -> AnalyzerSignals:
         return self._signals
+
+    @property
+    def last_raw_va(self) -> tuple[float, float] | None:
+        return self._last_raw_va
+
+    def set_calibrator(self, calibrator) -> None:
+        self._calibrator = calibrator
 
     def start(self) -> None:
         if self._running:
@@ -102,47 +97,57 @@ class AudioAnalyzer:
         self._recent_coords.clear()
         self._boundary_countdown = 0
         self._boundary_cooldown = 0
-        self._warmup_window = self.WARMUP_START
         self._locked = False
         self._locked_quadrant = ""
-        self._feature_buffer.clear()
-        self._smoothed_features = {}
         self._last_va = None
+        self._last_raw_va = None
+        self._last_quadrant = ""
+        self._restart_attempted = False
 
     def _analysis_loop(self) -> None:
         silence_streak = 0
         while self._running:
+            cycle_start = time.monotonic()
             try:
-                audio = self._capture.get_snapshot(self._warmup_window)
-                if audio is not None:
-                    mono = np.mean(audio, axis=0).astype(np.float32)
-                    rms = float(np.sqrt(np.mean(mono ** 2)))
-                    if rms < self.SILENCE_RMS_THRESHOLD:
-                        silence_streak += 1
-                        print(f"[AUDIO] Silence: RMS={rms:.6f} < {self.SILENCE_RMS_THRESHOLD}, streak={silence_streak}",
-                              file=sys.stderr, flush=True)
-                        if silence_streak >= 3:
-                            self._signals.no_audio.emit()
-                        event = threading.Event()
-                        event.wait(timeout=self.ANALYSIS_INTERVAL)
-                        continue
-                    silence_streak = 0
-                    result = self._analyze_chunk(mono, self._capture.sample_rate)
-                    self._handle_result(result)
-                    if self._warmup_window < self.SNAPSHOT_SECONDS:
-                        self._warmup_window = min(
-                            self._warmup_window + self.WARMUP_STEP,
-                            self.SNAPSHOT_SECONDS
-                        )
-                else:
-                    event = threading.Event()
-                    event.wait(timeout=self.ANALYSIS_INTERVAL)
+                audio = self._capture.get_snapshot(self.WINDOW_SECONDS)
+                if audio is None or audio.shape[1] < int(self.MIN_AUDIO_SECONDS * self._capture.sample_rate):
+                    self._wait_next_cycle(cycle_start)
                     continue
+                mono = np.mean(audio, axis=0).astype(np.float32)
+                rms = float(np.sqrt(np.mean(mono ** 2)))
+                if rms < self.SILENCE_RMS_THRESHOLD:
+                    silence_streak += 1
+                    if silence_streak >= 3:
+                        self._signals.no_audio.emit()
+                    self._wait_next_cycle(cycle_start)
+                    continue
+                silence_streak = 0
+                result = self._analyze_chunk(mono, self._capture.sample_rate)
+                if result is not None:
+                    self._handle_result(result)
             except Exception as e:
-                self._signals.analysis_error.emit(str(e))
+                if not self._try_restart_engine(str(e)):
+                    self._running = False
+                    return
+            self._wait_next_cycle(cycle_start)
 
-            event = threading.Event()
-            event.wait(timeout=self.ANALYSIS_INTERVAL)
+    def _wait_next_cycle(self, cycle_start: float) -> None:
+        elapsed = time.monotonic() - cycle_start
+        remaining = self.HOP_SECONDS - elapsed
+        if remaining > 0:
+            threading.Event().wait(timeout=remaining)
+
+    def _try_restart_engine(self, error: str) -> bool:
+        if self._restart_attempted or self._m2e_client is None:
+            self._signals.analysis_error.emit(f"情绪引擎已停止: {error}")
+            return False
+        self._restart_attempted = True
+        try:
+            self._m2e_client.restart()
+            return True
+        except Exception as exc:
+            self._signals.analysis_error.emit(f"情绪引擎已停止: {exc}")
+            return False
 
     def _handle_result(self, result: MoodCoordinates) -> None:
         coord = (result.arousal, result.valence)
@@ -152,11 +157,8 @@ class AudioAnalyzer:
             self._recent_coords.clear()
             self._boundary_countdown = self.STABILIZATION_COUNT
             self._boundary_cooldown = self.BOUNDARY_COOLDOWN
-            self._warmup_window = self.WARMUP_START
             self._locked = False
             self._locked_quadrant = ""
-            self._feature_buffer.clear()
-            self._smoothed_features = {}
             self._signals.boundary_detected.emit()
 
         self._recent_coords.append(coord)
@@ -211,36 +213,45 @@ class AudioAnalyzer:
         threshold = self.BOUNDARY_THRESHOLD_LOCKED if self._locked else self.BOUNDARY_THRESHOLD
         return distance > threshold
 
-    def _analyze_chunk(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
-        if self._m2e_client is None:
-            self._signals.analysis_error.emit("music2emo 未启用，请在 config.json 中设置 music2emo.enabled=true")
-            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
-        if not self._m2e_client.available:
-            self._signals.analysis_error.emit("music2emo venv 不可用，请运行 music2emo_engine/install.bat")
-            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
-        return self._analyze_with_music2emo(audio, sr)
-
-    def _analyze_with_music2emo(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
+    def _analyze_chunk(self, audio: np.ndarray, sr: int) -> MoodCoordinates | None:
+        if self._m2e_client is None or not self._m2e_client.available:
+            self._signals.analysis_error.emit("情绪引擎不可用，请检查 music2emo 安装")
+            return None
         try:
             out = self._m2e_client.predict_audio(audio, sr)
         except Exception as exc:
-            self._signals.analysis_error.emit(f"music2emo unavailable: {exc}")
-            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
-        if "error" in out:
-            self._signals.analysis_error.emit(f"music2emo error: {out['error']}")
-            return MoodCoordinates(0.0, 0.0, "CALM", 0.0)
-        arousal = (float(out["arousal"]) - 5.0) / 4.0
-        valence = (float(out["valence"]) - 5.0) / 4.0
+            raise RuntimeError(f"music2emo predict failed: {exc}") from exc
+        if not isinstance(out, dict) or "error" in out:
+            self._signals.analysis_error.emit(
+                f"music2emo error: {out.get('error') if isinstance(out, dict) else out}")
+            return None
+        try:
+            raw_arousal = float(out["arousal"])
+            raw_valence = float(out["valence"])
+            if not np.isfinite(raw_arousal) or not np.isfinite(raw_valence):
+                raise ValueError("valence/arousal is not finite")
+        except (KeyError, TypeError, ValueError) as exc:
+            self._signals.analysis_error.emit(f"music2emo returned invalid scores: {exc}")
+            return None
+
+        self._last_raw_va = (raw_valence, raw_arousal)
+
+        if self._calibrator is not None:
+            valence, arousal = self._calibrator.calibrate(raw_valence, raw_arousal)
+        else:
+            arousal = self._normalize_model_score(raw_arousal)
+            valence = self._normalize_model_score(raw_valence)
+
         arousal, valence = self._smooth_va(arousal, valence)
         arousal = max(-1.0, min(1.0, arousal))
         valence = max(-1.0, min(1.0, valence))
         quadrant = self._quadrant_from_va(arousal, valence)
         return MoodCoordinates(arousal, valence, quadrant, 0.0)
 
-    def _analyze_with_librosa(self, audio: np.ndarray, sr: int) -> MoodCoordinates:
-        features = self._extract_features(audio, sr)
-        smoothed = self._apply_temporal_smoothing(features)
-        return self._map_to_quadrant(smoothed)
+    @staticmethod
+    def _normalize_model_score(score: float) -> float:
+        score = max(1.0, min(9.0, score))
+        return (score - 5.0) / 4.0
 
     def _smooth_va(self, arousal: float, valence: float) -> tuple[float, float]:
         if self._last_va is None:
@@ -252,110 +263,7 @@ class AudioAnalyzer:
         self._last_va = (a, v)
         return a, v
 
-    @staticmethod
-    def _quadrant_from_va(arousal: float, valence: float) -> str:
-        if arousal >= 0 and valence >= 0:
-            return "VIGOROUS"
-        if arousal >= 0 and valence < 0:
-            return "TENSE"
-        if arousal < 0 and valence < 0:
-            return "MELANCHOLY"
-        return "CALM"
-
-    def _extract_features(self, audio: np.ndarray, sr: int) -> dict:
-        rms = librosa.feature.rms(y=audio)[0]
-        rms_val = float(np.mean(rms))
-
-        centroid = librosa.feature.spectral_centroid(y=audio, sr=sr)[0]
-        centroid_val = float(np.mean(centroid))
-
-        zcr = librosa.feature.zero_crossing_rate(y=audio)[0]
-        zcr_val = float(np.mean(zcr))
-
-        bandwidth = librosa.feature.spectral_bandwidth(y=audio, sr=sr)[0]
-        bandwidth_val = float(np.mean(bandwidth))
-
-        tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
-        tempo_val = float(tempo) if np.isscalar(tempo) else float(tempo[0])
-
-        harmonic = librosa.effects.harmonic(y=audio)
-        harmonic_ratio = float(np.mean(np.abs(harmonic)) / (np.mean(np.abs(audio)) + 1e-10))
-
-        contrast = librosa.feature.spectral_contrast(y=audio, sr=sr, n_bands=6)
-        contrast_val = float(np.mean(contrast))
-
-        flatness = librosa.feature.spectral_flatness(y=audio)[0]
-        flatness_val = float(np.mean(flatness))
-
-        onset_env = librosa.onset.onset_strength(y=audio, sr=sr)
-        onset_val = float(np.mean(np.log1p(onset_env)))
-
-        rolloff = librosa.feature.spectral_rolloff(y=audio, sr=sr)[0]
-        rolloff_val = float(np.mean(rolloff))
-
-        mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
-        mfcc_val = float(np.mean(np.abs(mfcc[1:])))
-
-        return {
-            "rms_norm": min(rms_val / self.NORM_RMS, 1.0),
-            "tempo_bpm": tempo_val,
-            "tempo_norm": min(max((tempo_val - self.NORM_TEMPO_MIN) / self.NORM_TEMPO_RANGE, 0.0), 1.0),
-            "bandwidth_norm": min(bandwidth_val / self.NORM_BANDWIDTH, 1.0),
-            "centroid_norm": min(centroid_val / self.NORM_CENTROID, 1.0),
-            "zcr_norm": min(zcr_val / self.NORM_ZCR, 1.0),
-            "harmonic_ratio": min(harmonic_ratio / self.NORM_HARMONIC, 1.0),
-            "spectral_contrast": min(contrast_val / self.NORM_CONTRAST, 1.0),
-            "flatness": min(flatness_val * 10.0, 1.0),
-            "onset_strength": min(onset_val / self.NORM_ONSET, 1.0),
-            "rolloff_norm": min(rolloff_val / self.NORM_ROLLOFF, 1.0),
-            "mfcc_val": mfcc_val,
-        }
-
-    def _apply_temporal_smoothing(self, features: dict) -> dict:
-        self._feature_buffer.append(features)
-
-        if not self._smoothed_features:
-            self._smoothed_features = {k: v for k, v in features.items()}
-            return dict(self._smoothed_features)
-
-        alpha = self.FEATURE_EMA_ALPHA
-        for key in features:
-            if key in self._smoothed_features:
-                self._smoothed_features[key] = (
-                    alpha * features[key] + (1 - alpha) * self._smoothed_features[key]
-                )
-            else:
-                self._smoothed_features[key] = features[key]
-
-        return dict(self._smoothed_features)
-
-    def _map_to_quadrant(self, features: dict) -> MoodCoordinates:
-        onset = features.get("onset_strength", 0.5)
-        contrast = features.get("spectral_contrast", 0.5)
-        flatness = features.get("flatness", 0.1)
-        rolloff = features.get("rolloff_norm", 0.5)
-
-        arousal_raw = (
-            features["tempo_norm"] * 0.35
-            + features["rms_norm"] * 0.20
-            + features["bandwidth_norm"] * 0.10
-            + onset * 0.20
-            + rolloff * 0.15
-        )
-
-        valence_raw = (
-            contrast * 0.30
-            + features["centroid_norm"] * 0.15
-            + features["harmonic_ratio"] * 0.20
-            + rolloff * 0.15
-            - features["rms_norm"] * 0.03
-            - features["zcr_norm"] * 0.05
-            - flatness * 0.05
-        )
-
-        arousal = max(-1.0, min(1.0, arousal_raw * 2 - 1))
-        valence = max(-1.0, min(1.0, (valence_raw - 0.20) * 2.5))
-
+    def _quadrant_from_va(self, arousal: float, valence: float) -> str:
         if arousal >= 0 and valence >= 0:
             quadrant = "VIGOROUS"
         elif arousal >= 0 and valence < 0:
@@ -365,12 +273,21 @@ class AudioAnalyzer:
         else:
             quadrant = "CALM"
 
-        return MoodCoordinates(
-            arousal=arousal,
-            valence=valence,
-            quadrant=quadrant,
-            confidence=0.0
-        )
+        if self._last_quadrant and quadrant != self._last_quadrant:
+            last_arousal_positive = self._last_quadrant in {"VIGOROUS", "TENSE"}
+            last_valence_positive = self._last_quadrant in {"VIGOROUS", "CALM"}
+            arousal_changed = (arousal >= 0) != last_arousal_positive
+            valence_changed = (valence >= 0) != last_valence_positive
+
+            if arousal_changed and not valence_changed:
+                if abs(arousal) < self.QUADRANT_DEADZONE:
+                    return self._last_quadrant
+            elif valence_changed and not arousal_changed:
+                if abs(valence) < self.QUADRANT_DEADZONE:
+                    return self._last_quadrant
+
+        self._last_quadrant = quadrant
+        return quadrant
 
     def _compute_confidence(self, current: MoodCoordinates) -> float:
         if not self._recent_quadrants:

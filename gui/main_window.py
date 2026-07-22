@@ -239,6 +239,15 @@ class MainWindow(QMainWindow):
 
     def _start_audio(self):
         if self._audio_capture.start():
+            self._signals.error_occurred.emit("情绪引擎预热中...")
+            if self._m2e_client is not None:
+                try:
+                    self._m2e_client.warmup()
+                except Exception as exc:
+                    print(f"[AUDIO] 情绪引擎预热失败: {exc}", file=sys.stderr, flush=True)
+                    self._signals.error_occurred.emit(f"情绪引擎预热失败: {exc}")
+                    self._audio_capture.stop()
+                    return
             self._audio_analyzer.start()
             self._mood_active = True
         else:
