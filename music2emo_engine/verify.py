@@ -52,6 +52,7 @@ def main() -> int:
         return 1
     print(f"valence  = {out['valence']:.2f} (1-9 scale)")
     print(f"arousal  = {out['arousal']:.2f} (1-9 scale)")
+    print(f"device   = {out.get('device', 'unknown')}")
     print(f"moods    = {out.get('moods', [])}")
     a_norm = (out["arousal"] - 5.0) / 4.0
     v_norm = (out["valence"] - 5.0) / 4.0
