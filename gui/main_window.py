@@ -1,4 +1,5 @@
 import sys
+import time
 import traceback
 import threading
 import ctypes
@@ -6,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame,
+    QLabel, QFrame, QPushButton,
 )
 from PySide6.QtCore import Signal, QObject, Qt, QTimer, QRect, QPoint
 from PySide6.QtGui import QGuiApplication, QIcon, QPainter, QColor, QPen, QFont
@@ -20,6 +21,7 @@ from core.template_library import TemplateLibrary
 from core.audio_capture import AudioCaptureManager
 from core.audio_analyzer import AudioAnalyzer
 from core.music2emo_client import Music2EmoClient
+from core.mood_calibration import Calibrator, CalibrationSample, CalibrationStore
 from process_audio_capture import ProcessAudioCapture
 
 from gui.theme import MAIN_QSS
@@ -29,6 +31,7 @@ from gui.playlist_grid import PlaylistGrid
 from gui.quadrant_chart import QuadrantChart
 from gui.spectrum_bar import SpectrumBar, _FFT_SIZE
 from gui.screenshot_library import ScreenshotLibrary
+from gui.calibration_popover import CalibrationPopover
 
 
 class Signals(QObject):
@@ -102,6 +105,9 @@ class MainWindow(QMainWindow):
             if m2e_cfg["enabled"] else None
         )
         self._audio_analyzer = AudioAnalyzer(self._audio_capture, self._m2e_client)
+        self._calibration_store = CalibrationStore("calibration_samples.json")
+        self._calibrator = Calibrator(self._calibration_store)
+        self._audio_analyzer.set_calibrator(self._calibrator)
 
         # ── State ───────────────────────────────────────────────────
         self._current_track: TrackInfo | None = None
@@ -186,6 +192,10 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self._playlist_grid, 1)
 
         self._quadrant_chart = QuadrantChart(self)
+        self._calib_button = QPushButton("校正", self._quadrant_chart)
+        self._calib_button.setFixedSize(44, 22)
+        self._calib_button.clicked.connect(self._on_correct_mood)
+        self._calib_button.hide()
         self._quadrant_chart.setFixedHeight(220)
         bottom_layout.addWidget(self._quadrant_chart, 1)
 
@@ -206,6 +216,8 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._calib_button.move(self._quadrant_chart.width() - 48, 4)
+        self._calib_button.show()
 
     # ───────────────────── Workflow ─────────────────────────────────
 
@@ -456,6 +468,26 @@ class MainWindow(QMainWindow):
             self._playlist_grid.set_buttons_active(True)
 
     # ─────────────────────── Dialogs ────────────────────────────────
+
+    def _on_correct_mood(self):
+        raw = self._audio_analyzer.last_raw_va
+        if raw is None:
+            self._signals.error_occurred.emit("还没有分析结果，无法校正")
+            return
+        pop = CalibrationPopover(self)
+        pop.corrected.connect(lambda v, a: self._save_correction(raw, v, a))
+        pop.exec()
+
+    def _save_correction(self, raw: tuple[float, float], v: float, a: float):
+        self._calibration_store.add(CalibrationSample(
+            raw_valence=raw[0], raw_arousal=raw[1],
+            user_valence=v, user_arousal=a,
+            timestamp=time.time(),
+        ))
+        self._calibrator.refit()
+        n = len(self._calibration_store.samples)
+        state = "已生效" if self._calibrator.active else f"{n}/{self._calibrator.MIN_SAMPLES}"
+        self._track_card.set_track(f"校正值已记录（{state}）")
 
     def _on_open_screenshot_library(self):
         lib = ScreenshotLibrary(
