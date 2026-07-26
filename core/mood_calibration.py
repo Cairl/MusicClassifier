@@ -7,7 +7,7 @@ to the default linear normalization (score - 5) / 4.
 
 import json
 import os
-import time
+import threading
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -37,7 +37,7 @@ class CalibrationStore:
             with open(self._path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.samples = [CalibrationSample(**item) for item in data]
-        except (json.JSONDecodeError, TypeError, KeyError):
+        except (json.JSONDecodeError, TypeError, KeyError, UnicodeDecodeError):
             self.samples = []
 
     def save(self) -> None:
@@ -54,35 +54,39 @@ class Calibrator:
 
     def __init__(self, store: CalibrationStore):
         self._store = store
+        self._lock = threading.Lock()
         self._v_model: IsotonicRegression | None = None
         self._a_model: IsotonicRegression | None = None
         self.refit()
 
     @property
     def active(self) -> bool:
-        return self._v_model is not None and self._a_model is not None
+        with self._lock:
+            return self._v_model is not None and self._a_model is not None
 
     def refit(self) -> None:
-        samples = self._store.samples
-        if len(samples) < self.MIN_SAMPLES:
-            self._v_model = None
-            self._a_model = None
-            return
-        raw_v = np.array([s.raw_valence for s in samples])
-        raw_a = np.array([s.raw_arousal for s in samples])
-        user_v = np.array([s.user_valence for s in samples])
-        user_a = np.array([s.user_arousal for s in samples])
-        self._v_model = IsotonicRegression(out_of_bounds="clip").fit(raw_v, user_v)
-        self._a_model = IsotonicRegression(out_of_bounds="clip").fit(raw_a, user_a)
+        with self._lock:
+            samples = self._store.samples
+            if len(samples) < self.MIN_SAMPLES:
+                self._v_model = None
+                self._a_model = None
+                return
+            raw_v = np.array([s.raw_valence for s in samples])
+            raw_a = np.array([s.raw_arousal for s in samples])
+            user_v = np.array([s.user_valence for s in samples])
+            user_a = np.array([s.user_arousal for s in samples])
+            self._v_model = IsotonicRegression(out_of_bounds="clip").fit(raw_v, user_v)
+            self._a_model = IsotonicRegression(out_of_bounds="clip").fit(raw_a, user_a)
 
     def calibrate(self, raw_valence: float, raw_arousal: float) -> tuple[float, float]:
-        if not self.active:
-            return (
-                self._default_normalize(raw_valence),
-                self._default_normalize(raw_arousal),
-            )
-        v = float(self._v_model.predict([raw_valence])[0])
-        a = float(self._a_model.predict([raw_arousal])[0])
+        with self._lock:
+            if self._v_model is None or self._a_model is None:
+                return (
+                    self._default_normalize(raw_valence),
+                    self._default_normalize(raw_arousal),
+                )
+            v = float(self._v_model.predict([raw_valence])[0])
+            a = float(self._a_model.predict([raw_arousal])[0])
         return (
             max(-1.0, min(1.0, v)),
             max(-1.0, min(1.0, a)),

@@ -33,6 +33,8 @@ from gui.spectrum_bar import SpectrumBar, _FFT_SIZE
 from gui.screenshot_library import ScreenshotLibrary
 from gui.calibration_popover import CalibrationPopover
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 class Signals(QObject):
     track_detected = Signal(object)
@@ -106,7 +108,9 @@ class MainWindow(QMainWindow):
             if m2e_cfg["enabled"] else None
         )
         self._audio_analyzer = AudioAnalyzer(self._audio_capture, self._m2e_client)
-        self._calibration_store = CalibrationStore("calibration_samples.json")
+        self._calibration_store = CalibrationStore(
+            str(_PROJECT_ROOT / "calibration_samples.json")
+        )
         self._calibrator = Calibrator(self._calibration_store)
         self._audio_analyzer.set_calibrator(self._calibrator)
 

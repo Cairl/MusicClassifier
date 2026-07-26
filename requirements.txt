@@ -7,3 +7,4 @@ opencv-python>=4.8
 Pillow>=10.0
 process-audio-capture>=1.0.0
 librosa>=0.10
+scikit-learn>=1.3

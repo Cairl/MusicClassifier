@@ -1,5 +1,3 @@
-import numpy as np
-
 from core.mood_calibration import Calibrator, CalibrationSample, CalibrationStore
 
 
@@ -72,3 +70,10 @@ def test_refit_after_adding_samples(tmp_path):
         store.add(s)
     cal.refit()
     assert cal.active is True
+
+
+def test_store_handles_corrupt_bytes(tmp_path):
+    path = tmp_path / "cal.json"
+    path.write_bytes(b"\xff\xfe invalid \x80")
+    store = CalibrationStore(str(path))
+    assert store.samples == []

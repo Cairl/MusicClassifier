@@ -1,6 +1,6 @@
 """Calibration popover — 3x3 valence-arousal grid for user correction."""
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QDialog, QGridLayout, QPushButton, QVBoxLayout, QLabel
 
 _CELL_VALUE = {-1: -2 / 3, 0: 0.0, 1: 2 / 3}

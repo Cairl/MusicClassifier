@@ -14,6 +14,7 @@ Protocol v2 (binary on stdin, JSON lines on stdout):
 
 import json
 import os
+import shutil
 import struct
 import sys
 import tempfile
@@ -296,6 +297,7 @@ class Engine:
         encoded_root = encoded_root + [0] * pad
         encoded_attr = encoded_attr + [0] * pad
 
+        shutil.rmtree(workdir, ignore_errors=True)
         return (
             torch.tensor(encoded, dtype=torch.long),
             torch.tensor(encoded_root, dtype=torch.long),
@@ -319,6 +321,8 @@ def main() -> int:
 
     try:
         engine = Engine()
+        if engine.device.type != "cuda":
+            raise RuntimeError("CUDA unavailable in engine venv; rerun music2emo_engine\\install.bat")
         warm = np.zeros(RESAMPLE_RATE * 3, dtype=np.float32)
         engine.predict_pcm(warm, RESAMPLE_RATE)
     except Exception as exc:

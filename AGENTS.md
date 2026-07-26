@@ -6,16 +6,16 @@ MusicClassifier is a Windows-based semi-automated Apple Music song classificatio
 
 **Architecture**: Screenshot → OCR recognition → User selection → Simulated mouse clicks. Four core modules are connected through the `TrackInfo` dataclass. All UI automation runs on background threads to keep the PySide6 GUI responsive.
 
-Additionally, the app features a **real-time audio mood analysis** system: it captures process audio from Apple Music via named pipes, predicts valence/arousal via music2emo (MERT-based, isolated subprocess) — falling back to librosa feature extraction when the engine is unavailable — then maps the result to a valence-arousal quadrant and recommends the best matching playlist.
+Additionally, the app features a **real-time audio mood analysis** system: it captures process audio from Apple Music via named pipes, predicts valence/arousal via the music2emo engine (MERT-based, isolated subprocess with GPU in-memory inference), optionally applies a personal isotonic-regression calibration layer, then maps the result to a valence-arousal quadrant and recommends the best matching playlist. The librosa fallback path has been removed — when the engine is unavailable or errors, the analyzer emits `analysis_error` and skips that window (no fake coordinates).
 
-**Tech Stack**: Python 3.12, PySide6, PaddleOCR 2.x, PaddlePaddle 2.x, PyAutoGUI, pygetwindow, OpenCV, librosa, process-audio-capture; optional music2emo engine (torch + MERT, isolated venv)
+**Tech Stack**: Python 3.12, PySide6, PaddleOCR 2.x, PaddlePaddle 2.x, PyAutoGUI, pygetwindow, OpenCV, process-audio-capture, scikit-learn (isotonic regression for calibration); music2emo engine v2 (torch 2.7.1+cu128 + MERT-v1-95M, isolated venv, GPU in-memory inference)
 
 ## Setup Commands
 
 - Install dependencies: `pip install -r requirements.txt`
 - **Critical**: PaddlePaddle 3.x and PaddleOCR 3.x are incompatible with this project. Version constraints in `requirements.txt` are `paddleocr>=2.7,<3.0` and `paddlepaddle>=2.5,<3.0`. Do not upgrade beyond these ranges.
 - Python path on this machine: `C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe`
-- **Optional: music2emo mood engine** (improves valence/arousal accuracy over the librosa baseline): run `music2emo_engine\install.bat` to create an isolated venv (Python 3.12) with torch + MERT. First launch downloads the MERT model (~400MB, set `HF_ENDPOINT=https://hf-mirror.com` if HuggingFace is blocked). Toggle via `config.json` → `music2emo.enabled`; when off or the venv is absent, `AudioAnalyzer` automatically falls back to the librosa feature path. The engine runs as an isolated subprocess (`music2emo_engine/server.py`) so torch/MERT never pollute the PaddlePaddle host env.
+- **music2emo mood engine v2** (required for mood analysis — there is no longer a librosa fallback): run `music2emo_engine\install.bat` to create an isolated venv (Python 3.12) with torch 2.7.1+cu128 (RTX 5070 / sm_120 needs cu128+) + MERT-v1-95M. First launch downloads the MERT model (~400MB, set `HF_ENDPOINT=https://hf-mirror.com` if HuggingFace is blocked). The engine runs as an isolated subprocess (`music2emo_engine/server.py`) so torch/MERT never pollute the PaddlePaddle host env. Protocol v2: stdin binary frames (8-byte `struct "<II"` header = sample_rate + frame_count, then float32 mono PCM; `frame_count==0xFFFFFFFF` = EXIT), JSON-line responses on stdout, prints `READY v2` after a silent warmup inference. Toggle via `config.json` → `music2emo.enabled`; when off or the venv is absent, `AudioAnalyzer` emits `analysis_error` per window and produces no mood coordinates (it does NOT fall back to librosa).
 
 ## Development Workflow
 
@@ -29,8 +29,8 @@ Additionally, the app features a **real-time audio mood analysis** system: it ca
 
 - Run all tests: `python -m pytest tests/ -v`
 - Tests are located in `tests/`, named `test_<module_name>.py`
-- 3 test files covering audio analyzer (including temporal smoothing, boundary detection, confidence, and instrument-specific scenarios), audio capture manager, and quadrant chart.
-- Tests use `unittest.mock` to mock `pyautogui`, `pygetwindow`, `PaddleOCR`, and `librosa`. No real windows or OCR needed.
+- 6 test files: `test_audio_analyzer_mood_fix.py` (sliding-window analyzer: engine fallback, restart-once, hysteresis deadzone, calibrator wiring), `test_audio_capture.py` (NamedPipe WAV capture), `test_quadrant_chart.py` (quadrant widget), `test_music2emo_client.py` (binary protocol v2 client: warmup, restart, frame encoding), `test_mood_calibration.py` (CalibrationStore persistence + Calibrator isotonic fit / clipping / out-of-bounds), `test_calibration_popover.py` (3x3 grid dialog signal).
+- Tests use `unittest.mock` to mock `pyautogui`, `pygetwindow`, `PaddleOCR`, and the music2emo client. No real windows, OCR, or GPU needed.
 
 ## Code Style
 
@@ -76,7 +76,9 @@ MusicClassifier/
 │   ├── playlist_config.py   # Config loading, volume/mood/playlist parsing
 │   ├── template_library.py  # Template collection, matching, and missing detection
 │   ├── audio_capture.py     # NamedPipe-based Apple Music process audio capture
-│   └── audio_analyzer.py    # librosa feature extraction + valence-arousal mood analysis
+│   ├── audio_analyzer.py    # 10s/2s sliding-window mood analysis via music2emo engine (no librosa fallback)
+│   ├── music2emo_client.py  # Subprocess client: binary PCM protocol v2, warmup, restart-once
+│   └── mood_calibration.py  # CalibrationStore (JSON) + Calibrator (isotonic regression, thread-locked)
 ├── gui/
 │   ├── main_window.py       # Main window controller — assembles components, wires signals
 │   ├── theme.py             # Design system — color tokens, typography, spacing, shared QSS
@@ -85,13 +87,18 @@ MusicClassifier/
 │   ├── track_card.py        # Track info card — song name, album
 │   ├── playlist_grid.py     # Playlist button grid — 5-column grid from config
 │   ├── quadrant_chart.py    # Valence-arousal quadrant visualization
-│   ├── screenshot_library.py# Screenshot library — vertical list of all templates with ✓/✗ status
+│   ├── calibration_popover.py # 3x3 correction grid dialog for personal calibration
+│   ├── highlight_overlay.py # Persistent OCR highlight overlay (in-place rect updates)
+│   ├── spectrum_bar.py      # 16-band FFT spectrum bar
+│   ├── screenshot_library.py# Screenshot library — vertical list of all templates with status
 │   ├── screenshot_overlay.py# Screenshot overlay for region selection
-│   ├── countdown_overlay.py # 5-second countdown before capture
-│   └── icons.py             # SVG path icon utilities
+│   └── countdown_overlay.py # 5-second countdown before capture
 └── tests/
-    ├── test_audio_analyzer.py
+    ├── test_audio_analyzer_mood_fix.py
     ├── test_audio_capture.py
+    ├── test_music2emo_client.py
+    ├── test_mood_calibration.py
+    ├── test_calibration_popover.py
     └── test_quadrant_chart.py
 ```
 
@@ -101,15 +108,18 @@ The GUI follows a **controller + component** pattern using PySide6:
 
 ```
 main_window.py (controller)
-  ├── theme.py       — design tokens (colors, fonts, spacing, shared QSS)
-  ├── icons.py       — SVG icon drawing utility
-  ├── sidebar.py     — Sidebar component (play/record/settings)
-  ├── track_card.py  — Track info card component
-  ├── playlist_grid.py — 5-column playlist grid component
-  ├── quadrant_chart.py — Mood quadrant visualization (QWidget paintEvent)
-  ├── settings_popover.py — Popup menu (standalone QWidget)
-  ├── capture_wizard.py — Template capture dialog (QDialog)
-  └── screenshot_overlay.py — Full-screen region selector (QDialog)
+  ├── theme.py             — design tokens (colors, fonts, spacing, shared QSS)
+  ├── icons.py             — SVG icon drawing utility
+  ├── sidebar.py           — Sidebar component (play/library/about)
+  ├── track_card.py        — Track info card component
+  ├── playlist_grid.py     — 5-column playlist grid component
+  ├── quadrant_chart.py    — Mood quadrant visualization (QWidget paintEvent)
+  ├── calibration_popover.py — 3x3 correction grid dialog (QDialog)
+  ├── highlight_overlay.py — Persistent OCR highlight overlay (in-place rect updates)
+  ├── spectrum_bar.py      — 16-band FFT spectrum bar
+  ├── screenshot_library.py — Template list dialog
+  ├── screenshot_overlay.py — Full-screen region selector (QDialog)
+  └── countdown_overlay.py  — 5-second countdown before capture
 ```
 
 **Key principles:**
@@ -146,15 +156,17 @@ Default screenshot region ratio: `(0.10, 0.30, 0.98, 0.88)` — left 10%, top 30
 
 `ActionExecutor.classify_track()` performs: click three-dots button → wait → **stable-click** "Add to Playlist" (verifies screen has stopped animating by comparing two consecutive screenshots before clicking) → wait → click target playlist name. Each step locates targets via fresh screenshot + template matching, with configurable delays between steps. The stable-click verification only applies to the "Add to Playlist" step.
 
-### Audio Mood Analysis
+### Audio Mood Analysis (engine v2)
 
 1. `AudioCaptureManager.start()` — finds Apple Music PID, creates NamedPipe, streams audio via `process-audio-capture`
-2. `AudioAnalyzer._analysis_loop()` — every 3s captures latest N seconds of stereo audio → converts to mono
-3. `_extract_features()` — computes RMS, tempo, spectral centroid, bandwidth, ZCR, harmonic ratio, spectral contrast, spectral flatness, onset strength (log-compressed to dampen transient-heavy instruments like piano), spectral rolloff, MFCC (13 coefficients); normalizes each to [0,1]
-4. `_apply_temporal_smoothing()` — EMA filter (α=0.35) over a 5-frame buffer to reduce inter-frame feature jitter
-5. `_map_to_quadrant()` — arousal = `tempo×0.35 + RMS×0.20 + bandwidth×0.10 + onset×0.20 + rolloff×0.15`; valence = `contrast×0.30 + centroid×0.15 + harmonic×0.20 + rolloff×0.15 - RMS×0.03 - ZCR×0.05 - flatness×0.05`; valence offset 0.20, scale 2.5; `NORM_HARMONIC=0.6` (harmonic_ratio typically 0.2-0.6 in real music)
-6. Stabilization: need 4 consistent quadrant readings before locking (confidence ≥ 60%); confidence = consistency×0.6 + boundary_margin×0.4 (distance from axes)
-7. Boundary detection: if 5 consecutive coordinates deviate > 0.8 (locked: 1.0) from rolling mean → reset analysis with 2-frame cooldown (new song detected). Lock mechanism always records quadrant history (even when locked) to allow self-correction.
+2. `AudioAnalyzer._analysis_loop()` — sliding window: 10s window (`WINDOW_SECONDS`), 2s hop (`HOP_SECONDS`); each hop captures latest audio, converts stereo→mono, requires ≥ `MIN_AUDIO_SECONDS` (4s) of audio
+3. `Music2EmoClient.predict_audio(audio, sr)` — sends binary PCM frame to the engine subprocess (8-byte `struct "<II"` header = sample_rate + frame_count, then float32 mono PCM); engine returns JSON `{valence, arousal}` in 1–9 range. Client handles warmup + single restart-on-crash.
+4. Score clamping: model scores clamped to [1, 9] then normalized to [-1, 1] via `(score - 5) / 4` when no calibrator is active.
+5. `Calibrator.calibrate(raw_v, raw_a)` — if ≥ `MIN_SAMPLES` (10) personal calibration samples exist, an `IsotonicRegression` per dimension maps raw scores → user-perceived [-1, 1]; otherwise falls back to the default linear `(score - 5) / 4`. Thread-locked (UI thread writes/refits, analyzer thread reads).
+6. Quadrant hysteresis: a `QUADRANT_DEADZONE` (0.08) around the axes — a coordinate inside the deadzone keeps the previous quadrant; a real transition requires crossing clearly past the axis.
+7. Stabilization: need `STABILIZATION_COUNT` (4) consistent quadrant readings before locking (confidence ≥ `LOCK_CONFIDENCE` 0.6); confidence = consistency×0.6 + boundary_margin×0.4.
+8. Boundary detection: if `COORD_HISTORY` (5) consecutive coordinates deviate > `BOUNDARY_THRESHOLD` (0.8, locked: 1.0) from rolling mean → reset analysis with `BOUNDARY_COOLDOWN` (2) frame cooldown (new song detected). Lock mechanism always records quadrant history (even when locked) to allow self-correction.
+9. Error handling: if the engine is unavailable, raises, returns an error payload, or returns non-finite scores, the analyzer emits `analysis_error` and returns None for that window (no fake coordinates). A crashed subprocess triggers exactly one `restart()` attempt, then the loop stops.
 
 ## Common Pitfalls
 
